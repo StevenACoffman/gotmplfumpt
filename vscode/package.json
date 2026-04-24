@@ -2,7 +2,7 @@
   "name": "gotmplfmt",
   "displayName": "gotmplfmt",
   "description": "Format Go templates using gotmplfmt",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "gohugoio",
   "license": "BSD-3-Clause",
   "repository": {
