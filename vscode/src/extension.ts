@@ -12,6 +12,7 @@ export function activate(context: vscode.ExtensionContext) {
   const languages: string[] = config.get("languages", [
     "html",
     "gohtml",
+    "gotmpl",
     "go-template",
   ]);
 

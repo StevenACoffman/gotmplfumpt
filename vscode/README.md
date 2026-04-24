@@ -17,7 +17,7 @@ Or set `gotmplfmt.path` in your VSCode settings to the full path of the binary.
 | Setting              | Default                              | Description                              |
 | -------------------- | ------------------------------------ | ---------------------------------------- |
 | `gotmplfmt.path`     | `"gotmplfmt"`                        | Path to the gotmplfmt binary.            |
-| `gotmplfmt.languages`| `["html", "gohtml", "go-template"]`  | Language IDs to register formatting for. |
+| `gotmplfmt.languages`| `["html", "gohtml", "gotmpl", "go-template"]`  | Language IDs to register formatting for. |
 
 To use gotmplfmt as the default formatter for HTML files, add to your `settings.json`:
 
