@@ -24,6 +24,8 @@ To use this as a CLI tool, you can run:
 go install github.com/gohugoio/gotmplfmt@latest
 ```
 
+The VSCode extension can be installed from [marketplace.visualstudio.com](https://marketplace.visualstudio.com/items?itemName=GoHugoIO.gotmplfmt).
+
 ```
 usage: gotmplfmt [flags] [path ...]
 
