@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 
 	"github.com/gohugoio/gotmplfmt/internal/format"
@@ -15,9 +16,16 @@ import (
 )
 
 var (
-	writeFlag = flag.Bool("w", false, "write result to (source) file instead of stdout")
-	listFlag  = flag.Bool("l", false, "list files whose formatting differs from gotmplfmt's")
-	diffFlag  = flag.Bool("d", false, "display diffs instead of rewriting files")
+	commit = "none"
+	tag    = "(devel)"
+	date   = "unknown"
+)
+
+var (
+	writeFlag   = flag.Bool("w", false, "write result to (source) file instead of stdout")
+	listFlag    = flag.Bool("l", false, "list files whose formatting differs from gotmplfmt's")
+	diffFlag    = flag.Bool("d", false, "display diffs instead of rewriting files")
+	versionFlag = flag.Bool("version", false, "print version information and exit")
 )
 
 func main() {
@@ -27,6 +35,12 @@ func main() {
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+
+	if *versionFlag {
+		initVersionInfo()
+		fmt.Printf("gotmplfmt %s (commit: %s, date: %s)\n", tag, commit, date)
+		return
+	}
 
 	if flag.NArg() == 0 {
 		if *writeFlag {
@@ -122,4 +136,22 @@ func isTemplateFile(path string) bool {
 		return true
 	}
 	return false
+}
+
+func initVersionInfo() {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return
+	}
+
+	for _, s := range bi.Settings {
+		switch s.Key {
+		case "vcs":
+		case "vcs.revision":
+			commit = s.Value
+		case "vcs.time":
+			date = s.Value
+		case "vcs.modified":
+		}
+	}
 }

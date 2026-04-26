@@ -32,6 +32,7 @@ usage: gotmplfmt [flags] [path ...]
   -d	display diffs instead of rewriting files
   -l	list files whose formatting differs from gotmplfmt's
   -w	write result to (source) file instead of stdout
+  -version print version information and exit
 ```
 
 Without flags, `gotmplfmt` prints the formatted output to stdout. When given a directory, it processes all template files (`.html`, `.htm`, `.xml`, `.svg`, `.rss`, `.atom`, `.gotmpl`, `.txt`) recursively. It also reads from stdin when no paths are given.
