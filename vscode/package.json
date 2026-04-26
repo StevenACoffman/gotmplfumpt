@@ -2,7 +2,7 @@
   "name": "gotmplfmt",
   "displayName": "gotmplfmt",
   "description": "Format Go templates using gotmplfmt",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "gohugoio",
   "license": "BSD-3-Clause",
   "icon": "icon.png",
@@ -57,7 +57,7 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.75.0",
-    "@vscode/vsce": "^3.0.0",
+    "@vscode/vsce": "^2.25.0",
     "typescript": "^5.0.0"
   }
 }

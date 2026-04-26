@@ -6,8 +6,18 @@ Formats Go templates using the [gotmplfmt](https://github.com/gohugoio/gotmplfmt
 
 The `gotmplfmt` binary must be installed and on your `PATH`:
 
+If you have [Go](https://go.dev/doc/install) installed, you can install from source:
+
 ```bash
 go install github.com/gohugoio/gotmplfmt@latest
+```
+
+For installers, see [releases](https://github.com/gohugoio/gotmplfmt/releases).
+
+On MacOs you can also install via Brew:
+
+```bash
+brew install --cask gohugoio/tap/gotmplfmt
 ```
 
 Or set `gotmplfmt.path` in your VSCode settings to the full path of the binary.

@@ -15,14 +15,27 @@ This is a Go HTML template formatter[^1]. It is based one the [text/template/par
 * But we do support `{{/* gotmplfmt-ignore-all */}}`, `{{/* gotmplfmt-ignore-start */}}` and `{{/* gotmplfmt-ignore-end */}}`.
 * And we also care about idempotency, so if you run into a example where we format differently on subsequent runs, please report it as a bug.
 
+## Install
+
+If you have [Go](https://go.dev/doc/install) installed, you can install from source:
+
+```
+go install github.com/gohugoio/gotmplfmt@latest
+```
+
+For installers, see [releases](https://github.com/gohugoio/gotmplfmt/releases).
+
+On MacOs you can also install via Brew:
+
+```
+brew install --cask gohugoio/tap/gotmplfmt
+```
+
 
 ## Usage
 
 To use this as a CLI tool, you can run:
 
-```
-go install github.com/gohugoio/gotmplfmt@latest
-```
 
 The VSCode extension can be installed from [marketplace.visualstudio.com](https://marketplace.visualstudio.com/items?itemName=GoHugoIO.gotmplfmt).
 
