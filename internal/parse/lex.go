@@ -386,6 +386,18 @@ func lexRightDelim(l *lexer) stateFn {
 }
 
 // lexInsideAction scans the elements inside action delimiters.
+//
+// The body is a single switch over the next rune. Each case emits or
+// transitions to a sub-state. Splitting the cases across sub-dispatchers
+// was tried and reverted: a sub-dispatcher returning nil could mean
+// either "I emitted, you're done" (l.emit returns nil) or "I didn't
+// match, try the next dispatcher" — those two meanings collided and
+// caused tokens like `:=` to emit a phantom second itemChar token. The
+// upstream text/template/lex.go uses the same single-switch shape; the
+// cognitive-complexity lint trips on the case-per-rune nature of the
+// grammar, which is intrinsic and not improved by splitting.
+//
+//nolint:revive,cyclop,funlen // see comment above; complexity is intrinsic to the grammar.
 func lexInsideAction(l *lexer) stateFn {
 	delim, _ := l.atRightDelim()
 	if delim {
@@ -394,98 +406,58 @@ func lexInsideAction(l *lexer) stateFn {
 		}
 		return l.errorf("unclosed left paren")
 	}
-	r := l.next()
-	if state, ok := lexPunctOrEOF(l, r); ok {
-		return state
-	}
-	if state, ok := lexLiteralStart(l, r); ok {
-		return state
-	}
-	return lexCatchAll(l, r)
-}
-
-// lexPunctOrEOF handles EOF and single-rune operators (=, :, |, etc.).
-// Returns (state, true) when r is recognized; the state may be nil if the
-// handler called l.emit (which yields the current item to nextItem) —
-// callers must NOT treat (nil, true) as "did not match." Returns
-// (nil, false) only when r is not one of these characters.
-func lexPunctOrEOF(l *lexer, r rune) (stateFn, bool) {
-	switch r {
-	case eof:
-		return l.errorf("unclosed action"), true
-	case '=':
-		return l.emit(itemAssign), true
-	case ':':
-		if l.next() != '=' {
-			return l.errorf("expected :="), true
-		}
-		return l.emit(itemDeclare), true
-	case '|':
-		return l.emit(itemPipe), true
-	case '(':
-		l.parenDepth++
-		return l.emit(itemLeftParen), true
-	case ')':
-		l.parenDepth--
-		if l.parenDepth < 0 {
-			return l.errorf("unexpected right paren"), true
-		}
-		return l.emit(itemRightParen), true
-	}
-	if isSpace(r) {
+	switch r := l.next(); {
+	case r == eof:
+		return l.errorf("unclosed action")
+	case isSpace(r):
 		l.backup() // Put space back in case we have " -}}".
-		return lexSpace, true
-	}
-	return nil, false
-}
-
-// lexLiteralStart handles tokens whose first rune signals a literal
-// (string, raw string, char, variable, dot/field, number). Returns
-// (state, true) when r is recognized; (nil, false) otherwise.
-func lexLiteralStart(l *lexer, r rune) (stateFn, bool) {
-	switch r {
-	case '"':
-		return lexQuote, true
-	case '`':
-		return lexRawQuote, true
-	case '$':
-		return lexVariable, true
-	case '\'':
-		return lexChar, true
-	case '.':
-		return lexDotOrNumber(l), true
-	}
-	if r == '+' || r == '-' || ('0' <= r && r <= '9') {
-		l.backup()
-		return lexNumber, true
-	}
-	return nil, false
-}
-
-// lexDotOrNumber resolves '.' as either a field accessor or the start of
-// a number. The dot has already been consumed.
-func lexDotOrNumber(l *lexer) stateFn {
-	if l.pos < Pos(len(l.input)) {
-		next := l.input[l.pos]
-		if next < '0' || '9' < next {
-			return lexField
+		return lexSpace
+	case r == '=':
+		return l.emit(itemAssign)
+	case r == ':':
+		if l.next() != '=' {
+			return l.errorf("expected :=")
 		}
-	}
-	l.backup()
-	return lexNumber
-}
-
-// lexCatchAll handles identifiers and printable-ASCII characters; falls
-// through to an error.
-func lexCatchAll(l *lexer, r rune) stateFn {
-	if isAlphaNumeric(r) {
+		return l.emit(itemDeclare)
+	case r == '|':
+		return l.emit(itemPipe)
+	case r == '"':
+		return lexQuote
+	case r == '`':
+		return lexRawQuote
+	case r == '$':
+		return lexVariable
+	case r == '\'':
+		return lexChar
+	case r == '.':
+		// Special look-ahead for ".field" so we don't break l.backup().
+		if l.pos < Pos(len(l.input)) {
+			next := l.input[l.pos]
+			if next < '0' || '9' < next {
+				return lexField
+			}
+		}
+		fallthrough // '.' can start a number.
+	case r == '+' || r == '-' || ('0' <= r && r <= '9'):
+		l.backup()
+		return lexNumber
+	case isAlphaNumeric(r):
 		l.backup()
 		return lexIdentifier
-	}
-	if r <= unicode.MaxASCII && unicode.IsPrint(r) {
+	case r == '(':
+		l.parenDepth++
+		return l.emit(itemLeftParen)
+	case r == ')':
+		l.parenDepth--
+		if l.parenDepth < 0 {
+			return l.errorf("unexpected right paren")
+		}
+		return l.emit(itemRightParen)
+	case r <= unicode.MaxASCII && unicode.IsPrint(r):
 		return l.emit(itemChar)
+	default:
+		return l.errorf("unrecognized character in action: %#U", r)
 	}
-	return l.errorf("unrecognized character in action: %#U", r)
 }
 
 // lexSpace scans a run of space characters. The first space is known to
