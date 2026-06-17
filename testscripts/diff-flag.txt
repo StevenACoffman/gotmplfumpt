@@ -1,25 +1,31 @@
 # Test -d flag displays diffs.
 
-gotmplfmt -d unformatted.html
+gotmplfumpt -d unformatted.tpl.go
 stdout 'diff'
-stdout '-  <span>hello</span>'
+stdout '-return'
 
 # No diff output for already formatted files.
-gotmplfmt -d formatted.html
+gotmplfumpt -d formatted.tpl.go
 ! stdout .
 
 # Source file should be unchanged.
-cmp unformatted.html unformatted.orig.html
+cmp unformatted.tpl.go unformatted.orig.tpl.go
 
--- unformatted.html --
-<div>
-  <span>hello</span>
-</div>
--- unformatted.orig.html --
-<div>
-  <span>hello</span>
-</div>
--- formatted.html --
-<div>
-	<span>hello</span>
-</div>
+-- unformatted.tpl.go --
+package main
+
+func F() {
+return
+}
+-- unformatted.orig.tpl.go --
+package main
+
+func F() {
+return
+}
+-- formatted.tpl.go --
+package main
+
+func F() {
+	return
+}

@@ -1,16 +1,20 @@
 # Test -w flag writes back to source file.
 
-gotmplfmt -w input.html
-cmp input.html expected.html
+gotmplfumpt -w input.tpl.go
+cmp input.tpl.go expected.tpl.go
 
 # Stdout should be empty when using -w.
 ! stdout .
 
--- input.html --
-<div>
-  <span>hello</span>
-</div>
--- expected.html --
-<div>
-	<span>hello</span>
-</div>
+-- input.tpl.go --
+package main
+
+func F() {
+return
+}
+-- expected.tpl.go --
+package main
+
+func F() {
+	return
+}

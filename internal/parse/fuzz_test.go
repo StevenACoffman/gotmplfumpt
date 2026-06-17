@@ -1,27 +1,34 @@
-package parse
+package parse_test
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/StevenACoffman/gotmplfumpt/internal/parse"
+)
 
 func FuzzParseString(f *testing.F) {
 	samples := []string{
 		`{{}}`,
 		`{{.}}`,
 		`{{.Field}}`,
-		`<ul>{{ range . }}<li>{{.Field}}</li>{{ end }}</ul>`,
+		`package main` + "\n\n" + `func {{ .Name }}() {}` + "\n",
+		`{{ range .Items }}var _ = {{ . }}{{ end }}`,
 		`{{.Field | printf "%q"}}`,
-		`{{if .}}yes{{else}}no{{end}}`,
+		`{{if .}}return 1{{else}}return 0{{end}}`,
+		`{{/* generated */}}` + "\n" + `package {{ .Pkg }}` + "\n",
+		`{{- $x := .Y -}}` + "\n" + `var V = {{ $x }}` + "\n",
 	}
 	for _, s := range samples {
 		f.Add(s)
 	}
 
 	f.Fuzz(func(t *testing.T, s string) {
-		root, err := Parse(s)
+		root, err := parse.Parse(s)
 		if err != nil {
 			return
 		}
 		out := root.String()
-		root2, err := Parse(out)
+		root2, err := parse.Parse(out)
 		if err != nil {
 			t.Fatalf("failed to parse output: %v", err)
 		}

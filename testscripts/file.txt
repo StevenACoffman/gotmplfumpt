@@ -1,20 +1,26 @@
 # Test formatting a single file to stdout.
 
-gotmplfmt input.html
-cmp stdout expected.html
+gotmplfumpt input.tpl.go
+cmp stdout expected.tpl.go
 
 # Source file should be unchanged.
-cmp input.html original.html
+cmp input.tpl.go original.tpl.go
 
--- input.html --
-<div>
-  <span>hello</span>
-</div>
--- original.html --
-<div>
-  <span>hello</span>
-</div>
--- expected.html --
-<div>
-	<span>hello</span>
-</div>
+-- input.tpl.go --
+package main
+
+func F() {
+return
+}
+-- original.tpl.go --
+package main
+
+func F() {
+return
+}
+-- expected.tpl.go --
+package main
+
+func F() {
+	return
+}

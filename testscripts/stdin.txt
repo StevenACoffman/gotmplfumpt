@@ -1,18 +1,22 @@
 # Test reading from stdin when no args are given.
 
-stdin input.html
-gotmplfmt
-cmp stdout expected.html
+stdin input.tpl.go
+gotmplfumpt
+cmp stdout expected.tpl.go
 
 # Test that -w with stdin fails.
-! gotmplfmt -w
-stderr 'error: cannot use -w with standard input'
+! gotmplfumpt -w
+stderr 'gotmplfumpt: cannot use -w with standard input'
 
--- input.html --
-<div>
-  <span>hello</span>
-</div>
--- expected.html --
-<div>
-	<span>hello</span>
-</div>
+-- input.tpl.go --
+package main
+
+func F() {
+return
+}
+-- expected.tpl.go --
+package main
+
+func F() {
+	return
+}

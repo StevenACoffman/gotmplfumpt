@@ -7,385 +7,17 @@
 package parse
 
 import (
-	"fmt"
-	"strconv"
 	"strings"
 )
 
-var textFormat = "%s" // Changed to "%q" in tests for better error messages.
-
 // Directive comment markers.
 const (
-	directiveIgnoreAll   = "gotmplfmt-ignore-all"
-	directiveIgnoreStart = "gotmplfmt-ignore-start"
-	directiveIgnoreEnd   = "gotmplfmt-ignore-end"
+	directiveIgnoreAll   = "gotmplfumpt-ignore-all"
+	directiveIgnoreStart = "gotmplfumpt-ignore-start"
+	directiveIgnoreEnd   = "gotmplfumpt-ignore-end"
 )
 
-// Pre-computed indent strings to avoid repeated allocation.
-var indentTab [16]string
-
-func init() {
-	for i := range indentTab {
-		indentTab[i] = strings.Repeat("\t", i)
-	}
-}
-
-func indent(level int) string {
-	if level < len(indentTab) {
-		return indentTab[level]
-	}
-	return strings.Repeat("\t", level)
-}
-
-// A Node is an element in the parse tree. The interface is trivial.
-// The interface contains an unexported method so that only
-// types local to this package can satisfy it.
-type Node interface {
-	Type() NodeType
-	String() string
-	Position() Pos // byte position of start of node in full original input string
-	// tree returns the containing *Tree.
-	// It is unexported so all implementations of Node are in this package.
-	tree() *Tree
-	// writeTo writes the String output to the builder.
-	writeTo(*printer)
-}
-
-// NodeType identifies the type of a parse tree node.
-type NodeType int
-
-// Pos represents a byte position in the original input text from which
-// this template was parsed.
-type Pos int
-
-func (p Pos) Position() Pos {
-	return p
-}
-
-// htmlScanner tracks state while scanning HTML tags in text content.
-// It is embedded in the printer and shared between computeHTMLDeltas
-// and splitHTMLLine to avoid duplicating scanning logic.
-type htmlScanner struct {
-	inTag       bool   // inside a '<' that hasn't been closed with '>'
-	isClose     bool   // the current incomplete tag is a closing tag
-	isVoid      bool   // the current incomplete tag is a void element
-	tagName     string // tag name of the current open tag
-	quoteChar   byte   // 0 if not in attr value, '"' or '\'' otherwise
-	inAttrValue bool   // inside a quoted attribute value within a tag
-	tagStartIdx int    // index of '<' that opened the current tag
-}
-
-// save returns a snapshot of the scanner state for later restoration.
-func (s htmlScanner) save() htmlScanner { return s }
-
-// scanText processes text character by character, calling onTagClose for each
-// completed tag. Tags spanning beyond the text leave the scanner in an open
-// state. Returns the index to continue scanning from (for callers that
-// skip ahead, e.g. void elements).
-func (s *htmlScanner) scanText(text string, onTagClose func(tag tagEvent)) {
-	for i := 0; i < len(text); i++ {
-		if s.inTag {
-			switch text[i] {
-			case '"', '\'':
-				if s.quoteChar == 0 {
-					s.quoteChar = text[i]
-					s.inAttrValue = true
-				} else if s.quoteChar == text[i] {
-					s.quoteChar = 0
-					s.inAttrValue = false
-				}
-			case '>':
-				if s.inAttrValue {
-					continue
-				}
-				selfClose := i > 0 && text[i-1] == '/'
-				onTagClose(tagEvent{
-					Name:      s.tagName,
-					IsClose:   s.isClose,
-					IsVoid:    s.isVoid,
-					SelfClose: selfClose,
-					StartIdx:  s.tagStartIdx,
-					EndIdx:    i,
-				})
-				s.inTag = false
-				s.isVoid = false
-				s.quoteChar = 0
-				s.inAttrValue = false
-			}
-			continue
-		}
-		if text[i] != '<' || i+1 >= len(text) {
-			continue
-		}
-		next := text[i+1]
-		// Skip doctype, comments, processing instructions.
-		if next == '!' || next == '?' {
-			if j := strings.IndexByte(text[i:], '>'); j >= 0 {
-				i += j
-			}
-			continue
-		}
-		s.inTag = true
-		s.isClose = next == '/'
-		s.tagStartIdx = i
-		// Extract tag name.
-		nameStart := i + 1
-		if s.isClose {
-			nameStart = i + 2
-		}
-		nameEnd := nameStart
-		for nameEnd < len(text) && isTagNameChar(text[nameEnd]) {
-			nameEnd++
-		}
-		tagName := ""
-		if nameEnd > nameStart {
-			tagName = strings.ToLower(text[nameStart:nameEnd])
-		}
-		s.tagName = tagName
-		if !s.isClose && voidElements[tagName] {
-			if j := strings.IndexByte(text[i:], '>'); j >= 0 {
-				// Void element closed on the same line — no depth change.
-				onTagClose(tagEvent{
-					Name:     tagName,
-					IsVoid:   true,
-					StartIdx: i,
-					EndIdx:   i + j,
-				})
-				i += j
-				s.inTag = false
-				continue
-			}
-			// Void element spans beyond text; keep inTag open
-			// so attribute lines get extra indentation.
-			s.isVoid = true
-		}
-	}
-}
-
-// tagEvent represents a completed HTML tag found during scanning.
-type tagEvent struct {
-	Name      string
-	IsClose   bool
-	IsVoid    bool
-	SelfClose bool
-	StartIdx  int // index of '<' in the scanned text
-	EndIdx    int // index of '>' in the scanned text
-}
-
-type printer struct {
-	*strings.Builder
-	prefix      string
-	depth       int
-	branchDepth int
-	htmlDepth   int
-
-	html htmlScanner // HTML tag tracking state
-
-	// Signals set by template actions for cross-node communication.
-	htmlTagHadActions bool   // a template action was written while an HTML tag was open
-	pendingCloseTag   string // tag name to auto-close after '>'
-	isLastInList      bool   // current node is the last in its parent ListNode
-	rawContentTag     string // inside <script>/<style> (body preserved verbatim across nodes)
-
-	// Branch-scoped formatting flags (saved/restored per branch).
-	inOneLiner         bool // inside a one-liner branch (suppress newlines for else/end)
-	oneLinerHTMLIndent bool // one-liner was indented as attribute in multi-line HTML tag
-	rightTrimPending   bool // right trim: strip leading whitespace from the next text node
-}
-
-func newPrinter() *printer {
-	return &printer{
-		Builder: new(strings.Builder),
-	}
-}
-
-// totalIndent returns the combined HTML + template nesting depth.
-func (p *printer) totalIndent() int {
-	n := p.htmlDepth + p.branchDepth
-	if n < 0 {
-		return 0
-	}
-	return n
-}
-
-func (p *printer) WritePrefix() {
-	p.WriteString(p.prefix)
-	p.WriteString(indent(p.depth))
-}
-
-// writeAction writes a template action: {{ keyword pipe }} or {{ pipe }}.
-// It handles multi-line pipes by computing a prefix from the current output
-// line and placing the closing delimiter on its own indented line.
-// keyword is empty for plain actions (ActionNode) and "if"/"with"/etc. for branches.
-func (p *printer) writeAction(keyword string, pipe *PipeNode, tr trim) {
-	// Compute prefix for multi-line pipe formatting.
-	s := p.String()
-	lastNL := strings.LastIndexByte(s, '\n')
-	afterNL := s
-	if lastNL >= 0 {
-		afterNL = s[lastNL+1:]
-	}
-	onOwnLine := strings.TrimLeft(afterNL, " \t") == ""
-	if onOwnLine {
-		p.prefix = afterNL
-	} else {
-		p.prefix = ""
-	}
-
-	p.WriteString(tr.leftDelim())
-	if keyword != "" {
-		p.WriteString(keyword)
-	}
-	if len(pipe.Cmds) > 0 {
-		if keyword != "" {
-			p.WriteByte(' ')
-		}
-		before := strings.Count(p.String(), "\n")
-		p.depth = 1
-		pipe.writeTo(p)
-		p.depth = 0
-		cur := p.String()
-		after := strings.Count(cur, "\n")
-		if before != after && cur[len(cur)-1] != '`' {
-			p.WriteString("\n")
-			if onOwnLine {
-				p.WritePrefix()
-			}
-			p.WriteString(tr.rightDelimNoSpace())
-		} else {
-			p.WriteString(tr.rightDelim())
-		}
-	} else {
-		p.WriteString(tr.rightDelim())
-	}
-}
-
-func (p *printer) writeBranchIndent() {
-	if p.totalIndent() == 0 {
-		return
-	}
-	s := p.String()
-	if len(s) == 0 || s[len(s)-1] == '\n' {
-		p.WriteString(indent(p.totalIndent()))
-	}
-}
-
-// writeControlIndent is like writeBranchIndent but forces a newline if the
-// output doesn't already end with one. Used for template control structures
-// (end, else, if, range, etc.) which must always start on their own line.
-// When inside an HTML tag's quoted attribute value, newlines and indentation
-// are suppressed to keep the attribute on a single line. When inside a
-// multi-line HTML tag but outside quotes, template actions are indented
-// one level deeper than the tag itself (like attribute continuation lines).
-func (p *printer) writeControlIndent() {
-	if p.inOneLiner {
-		return
-	}
-	if p.html.inTag {
-		if p.html.inAttrValue {
-			return
-		}
-		// Multi-line tag: template control on its own line,
-		// indented one level deeper than the tag.
-		s := p.String()
-		if len(s) > 0 && s[len(s)-1] != '\n' {
-			p.WriteByte('\n')
-		}
-		n := p.totalIndent() + 1
-		if n > 0 {
-			p.WriteString(indent(n))
-		}
-		return
-	}
-	s := p.String()
-	if len(s) > 0 && s[len(s)-1] != '\n' {
-		p.WriteByte('\n')
-	}
-	if p.totalIndent() > 0 {
-		p.WriteString(indent(p.totalIndent()))
-	}
-}
-
-// computeHTMLDeltas scans text for HTML tags, updates the printer's tag-tracking
-// state (for tags split across TextNodes), and returns depth adjustments:
-//   - pre: depth change to apply BEFORE indenting (from leading closing tags)
-//   - post: depth change to apply AFTER indenting (from opening tags)
-func (p *printer) computeHTMLDeltas(text string) (pre, post int) {
-	delta := 0
-	minDelta := 0
-	p.html.scanText(text, func(tag tagEvent) {
-		if tag.SelfClose || tag.IsVoid {
-			// no depth change
-		} else if tag.IsClose {
-			if tag.Name == p.rawContentTag {
-				p.rawContentTag = ""
-			}
-			if voidElements[tag.Name] {
-				// XML contexts (RSS, Atom, SVG) can use HTML void names
-				// like <link> as normal elements. We skip depth change on
-				// the open (treated as void) so we must also skip on close
-				// to keep indentation balanced.
-				return
-			}
-			delta--
-			if delta < minDelta {
-				minDelta = delta
-			}
-		} else if p.htmlTagHadActions {
-			// Structural tag with template actions inside.
-			rest := strings.TrimSpace(text[tag.EndIdx+1:])
-			closeTag := "</" + tag.Name + ">"
-			if rest == "" {
-				// No content after >, auto-close for depth balance.
-				p.pendingCloseTag = tag.Name
-			} else if strings.HasPrefix(strings.ToLower(rest), closeTag) {
-				// Close tag already present (idempotent re-format).
-			} else {
-				// Tag has actual content, treat as normal opening.
-				delta++
-			}
-		} else {
-			delta++
-			if p.rawContentTag == "" && rawContentElements[tag.Name] {
-				p.rawContentTag = tag.Name
-			}
-		}
-		p.htmlTagHadActions = false
-	})
-	return minDelta, delta - minDelta
-}
-
-func isTagNameChar(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-'
-}
-
-var voidElements = map[string]bool{
-	"area": true, "base": true, "br": true, "col": true,
-	"embed": true, "hr": true, "img": true, "input": true,
-	"link": true, "meta": true, "param": true, "source": true,
-	"track": true, "wbr": true,
-}
-
-var rawContentElements = map[string]bool{
-	"script": true,
-	"style":  true,
-}
-
-// liner is implemented by nodes that store their source line number.
-type liner interface {
-	lineNumber() int
-}
-
-func lineno(n Node) int {
-	return n.(liner).lineNumber()
-}
-
-// Type returns itself and provides an easy default implementation
-// for embedding in a Node. Embedded in all non-trivial Nodes.
-func (t NodeType) Type() NodeType {
-	return t
-}
-
+// NodeType values identify the kind of a parse tree node.
 const (
 	NodeText       NodeType = iota // Plain text.
 	NodeAction                     // A non-control action such as a field evaluation.
@@ -408,51 +40,283 @@ const (
 	NodeComment                    // A comment.
 )
 
-// Nodes.
+// indentTab is a precomputed cache of tab strings, indexed by depth.
+// Avoids strings.Repeat allocations during printing.
+//
+//nolint:gochecknoglobals // immutable cache; populated via function literal.
+var indentTab = func() [16]string {
+	var t [16]string
+	for i := range t {
+		t[i] = strings.Repeat("\t", i)
+	}
+	return t
+}()
+
+// Node is an element in the parse tree. The interface contains an
+// unexported method so that only types local to this package can satisfy
+// it.
+type Node interface {
+	Type() NodeType
+	String() string
+	Position() Pos // byte position of start of node in full original input
+	tree() *Tree
+	writeTo(*printer)
+}
+
+// NodeType identifies the type of a parse tree node.
+type NodeType int
+
+// Pos represents a byte position in the original input text from which
+// this template was parsed.
+type Pos int
+
+// liner is implemented by nodes that store their source line number.
+type liner interface {
+	lineNumber() int
+}
+
+// printer renders a parsed template AST back to source. Its
+// responsibilities:
+//
+//   - Track template branch nesting (branchDepth) so {{if}}/{{end}} pairs
+//     align consistently.
+//   - Carry the multi-line pipe alignment column (prefix) so that
+//     {{ dict\n "a" "b"\n }} stays vertically aligned to the action's
+//     opening column.
+//   - Remember whether the current branch is a one-liner so {{ else }}
+//     and {{ end }} stay on the same line.
+//   - Track right-trim pending so that text following a "-}}" delimiter
+//     is trimmed.
+//
+// Text between template actions is emitted verbatim — the format package
+// is what ultimately reflows the Go code via gofumpt.
+type printer struct {
+	*strings.Builder
+	prefix           string
+	depth            int
+	branchDepth      int
+	inOneLiner       bool
+	rightTrimPending bool
+	isLastInList     bool
+}
 
 // ListNode holds a sequence of nodes.
 type ListNode struct {
+	tr *Tree
+	NodeType
+	Nodes []Node
+	Pos
+}
+
+// TextNode holds plain text.
+type TextNode struct {
+	tr *Tree
+	NodeType
+	Text string
+	Pos
+	Line int
+}
+
+// CommentNode holds a comment.
+type CommentNode struct {
+	tr *Tree
+	NodeType
+	Text string
+	Pos
+	Trim trim
+	Line int
+}
+
+// PipeNode holds a pipeline with optional declaration.
+type PipeNode struct {
+	tr *Tree
+	NodeType
+	Decl []*VariableNode
+	Cmds []*CommandNode
+	Pos
+	Line     int
+	IsAssign bool
+}
+
+// ActionNode holds an action (something bounded by delimiters). Control
+// actions have their own nodes; ActionNode represents simple ones such as
+// field evaluations and parenthesized pipelines.
+type ActionNode struct {
+	tr *Tree
+	NodeType
+	Pipe *PipeNode
+	Pos
+	Trim trim
+	Line int
+}
+
+// CommandNode holds a command (a pipeline inside an evaluating action).
+type CommandNode struct {
+	tr *Tree
+	NodeType
+	Args []Node
+	Pos
+	Trim trim
+	Line int
+}
+
+// EndNode represents an {{end}} action.
+type EndNode struct {
+	tr *Tree
 	NodeType
 	Pos
-	tr    *Tree
-	Nodes []Node // The element nodes in lexical order.
+	Trim trim
+	Line int
 }
 
-func (t *Tree) newList(pos Pos) *ListNode {
-	return &ListNode{tr: t, NodeType: NodeList, Pos: pos}
+// ElseNode represents an {{else}}, {{else if}}, or {{else with}} action.
+// Does not appear in the final tree.
+type ElseNode struct {
+	tr *Tree
+	NodeType
+	Pipe    *PipeNode
+	List    *ListNode
+	Keyword string
+	Pos
+	Trim trim
+	Line int
 }
 
-// HasIgnoreAll reports whether the first comment in the list is a gotmplfmt-ignore-all directive.
-func (l *ListNode) HasIgnoreAll() bool {
-	for _, n := range l.Nodes {
-		if c, ok := n.(*CommentNode); ok {
-			return strings.Contains(c.Text, directiveIgnoreAll)
-		}
-		if _, ok := n.(*TextNode); ok {
-			continue
-		}
-		break
+// BranchNode is the common representation of if, range, and with.
+type BranchNode struct {
+	tr *Tree
+	NodeType
+	Pipe    *PipeNode
+	List    *ListNode
+	End     *EndNode
+	Keyword string
+	Elses   []*ElseNode
+	Pos
+	Trim trim
+	Line int
+}
+
+// Position returns the byte position.
+func (p Pos) Position() Pos { return p }
+
+// Type returns the NodeType. Provides a default implementation suitable
+// for embedding in concrete Node types.
+func (t NodeType) Type() NodeType { return t }
+
+func indent(level int) string {
+	if level < len(indentTab) {
+		return indentTab[level]
 	}
-	return false
+	return strings.Repeat("\t", level)
 }
 
-func (l *ListNode) append(n Node) {
-	l.Nodes = append(l.Nodes, n)
+func newPrinter() *printer {
+	return &printer{Builder: new(strings.Builder)}
 }
 
-func (l *ListNode) tree() *Tree {
-	return l.tr
+// WritePrefix writes the current prefix string followed by the depth
+// indent. Used during multi-line pipe formatting to align continuations
+// with the action's opening column.
+func (p *printer) WritePrefix() {
+	_, _ = p.WriteString(p.prefix)
+	_, _ = p.WriteString(indent(p.depth))
 }
 
-func (l *ListNode) String() string {
-	p := newPrinter()
-	l.writeTo(p)
-	return p.String()
+// writeAction writes a template action: {{ keyword pipe }} or {{ pipe }}.
+// It handles multi-line pipes by computing a prefix from the current
+// output line and placing the closing delimiter on its own indented line.
+// keyword is empty for plain actions (ActionNode) and "if"/"with"/etc.
+// for branches.
+func (p *printer) writeAction(keyword string, pipe *PipeNode, tr trim) {
+	p.setActionPrefix()
+	_, _ = p.WriteString(tr.leftDelim())
+	if keyword != "" {
+		_, _ = p.WriteString(keyword)
+	}
+	if len(pipe.Cmds) == 0 {
+		_, _ = p.WriteString(tr.rightDelim())
+		return
+	}
+	if keyword != "" {
+		_ = p.WriteByte(' ')
+	}
+	p.writePipeWithMaybeNewline(pipe, tr)
+}
+
+// setActionPrefix records the printer's current column so multi-line
+// pipes (e.g. {{ dict\n "a" "b"\n }}) can vertically align continuation
+// lines.
+func (p *printer) setActionPrefix() {
+	s := p.String()
+	lastNL := strings.LastIndexByte(s, '\n')
+	afterNL := s
+	if lastNL >= 0 {
+		afterNL = s[lastNL+1:]
+	}
+	if strings.TrimLeft(afterNL, " \t") == "" {
+		p.prefix = afterNL
+	} else {
+		p.prefix = ""
+	}
+}
+
+// writePipeWithMaybeNewline writes the pipe body. If the body grew a
+// newline (multi-line pipe), the closing delimiter goes on its own
+// indented line.
+func (p *printer) writePipeWithMaybeNewline(pipe *PipeNode, tr trim) {
+	onOwnLine := p.prefix != ""
+	before := strings.Count(p.String(), "\n")
+	p.depth = 1
+	pipe.writeTo(p)
+	p.depth = 0
+	cur := p.String()
+	after := strings.Count(cur, "\n")
+	if before != after && cur[len(cur)-1] != '`' {
+		_, _ = p.WriteString("\n")
+		if onOwnLine {
+			p.WritePrefix()
+		}
+		_, _ = p.WriteString(tr.rightDelimNoSpace())
+		return
+	}
+	_, _ = p.WriteString(tr.rightDelim())
+}
+
+func (p *printer) writeBranchIndent() {
+	if p.branchDepth == 0 {
+		return
+	}
+	s := p.String()
+	if s == "" || s[len(s)-1] == '\n' {
+		_, _ = p.WriteString(indent(p.branchDepth))
+	}
+}
+
+// writeControlIndent forces a newline if the output doesn't already end
+// with one, then indents to the current branch level. Used by template
+// control structures ({{end}}, {{else}}, {{if}}, {{range}}, {{with}})
+// which must always start on their own line, except inside a one-liner
+// branch.
+func (p *printer) writeControlIndent() {
+	if p.inOneLiner {
+		return
+	}
+	s := p.String()
+	if s != "" && s[len(s)-1] != '\n' {
+		_ = p.WriteByte('\n')
+	}
+	if p.branchDepth > 0 {
+		_, _ = p.WriteString(indent(p.branchDepth))
+	}
+}
+
+func lineno(n Node) int {
+	return n.(liner).lineNumber()
 }
 
 // isAllWhitespace reports whether s contains only spaces and tabs.
 func isAllWhitespace(s string) bool {
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		if s[i] != ' ' && s[i] != '\t' {
 			return false
 		}
@@ -460,9 +324,10 @@ func isAllWhitespace(s string) bool {
 	return true
 }
 
-// rawNodeStart returns the byte position of the '{{' that opens n's action,
-// or -1 if it can't be found. n.Position() is interior to {{…}} for
-// Action/Branch/Comment nodes, so we walk back to the opening delimiter.
+// rawNodeStart returns the byte position of the '{{' that opens n's
+// action, or -1 if it can't be found. n.Position() is interior to {{…}}
+// for Action/Branch/Comment nodes, so we walk back to the opening
+// delimiter.
 func rawNodeStart(n Node, src string) int {
 	pos := int(n.Position())
 	if pos <= 0 || pos > len(src) {
@@ -471,9 +336,9 @@ func rawNodeStart(n Node, src string) int {
 	return strings.LastIndex(src[:pos], "{{")
 }
 
-// findActionEnd returns the byte position just past the '}}' that closes the
-// action containing start, or -1 if not found. A '-}}' trim marker is before
-// '}}' so it is included in the returned slice.
+// findActionEnd returns the byte position just past the '}}' that closes
+// the action containing start, or -1 if not found. A '-}}' trim marker is
+// before '}}' so it is included in the returned slice.
 func findActionEnd(src string, start int) int {
 	if start < 0 || start >= len(src) {
 		return -1
@@ -486,8 +351,8 @@ func findActionEnd(src string, start int) int {
 }
 
 // rawNodeEnd returns the byte position just past the closing '}}' of n's
-// final action (the action itself for Action/Comment, the End for Branch),
-// or -1 if it can't be determined.
+// final action (the action itself for Action/Comment, the End for
+// Branch), or -1 if it can't be determined.
 func rawNodeEnd(n Node, src string) int {
 	switch nn := n.(type) {
 	case *ActionNode:
@@ -503,6 +368,38 @@ func rawNodeEnd(n Node, src string) int {
 	return -1
 }
 
+func (t *Tree) newList(pos Pos) *ListNode {
+	return &ListNode{tr: t, NodeType: NodeList, Pos: pos}
+}
+
+// HasIgnoreAll reports whether the first comment in the list is a
+// gotmplfumpt-ignore-all directive.
+func (l *ListNode) HasIgnoreAll() bool {
+	for _, n := range l.Nodes {
+		if c, ok := n.(*CommentNode); ok {
+			return strings.Contains(c.Text, directiveIgnoreAll)
+		}
+		if _, ok := n.(*TextNode); ok {
+			continue
+		}
+		break
+	}
+	return false
+}
+
+// String renders the list as source.
+func (l *ListNode) String() string {
+	p := newPrinter()
+	l.writeTo(p)
+	return p.String()
+}
+
+func (l *ListNode) append(n Node) {
+	l.Nodes = append(l.Nodes, n)
+}
+
+func (l *ListNode) tree() *Tree { return l.tr }
+
 func (l *ListNode) writeTo(sb *printer) {
 	if l == nil {
 		return
@@ -510,54 +407,9 @@ func (l *ListNode) writeTo(sb *printer) {
 	for i := 0; i < len(l.Nodes); i++ {
 		sb.isLastInList = i == len(l.Nodes)-1
 		n := l.Nodes[i]
-		if c, ok := n.(*CommentNode); ok && strings.Contains(c.Text, directiveIgnoreStart) {
-			found := false
-			for j := i + 1; j < len(l.Nodes); j++ {
-				if c2, ok := l.Nodes[j].(*CommentNode); ok && strings.Contains(c2.Text, directiveIgnoreEnd) {
-					src := l.tr.text
-					cStart := rawNodeStart(c, src)
-					c2End := rawNodeEnd(c2, src)
-					if cStart >= 0 && c2End > cStart && c2End <= len(src) {
-						// Preserve user-set indentation for the ignore block:
-						// any whitespace before the start directive on its own
-						// line, plus the verbatim source through the end directive.
-						// This matches the behavior of <script>/<style> blocks.
-						lineStart := strings.LastIndexByte(src[:cStart], '\n') + 1
-						userIndent := src[lineStart:cStart]
-						if isAllWhitespace(userIndent) {
-							sb.WriteString(userIndent)
-						}
-						sb.WriteString(src[cStart:c2End])
-						i = j
-						found = true
-						break
-					}
-					// Defensive fallback to formatting via writeTo.
-					c.writeTo(sb)
-					c2.writeTo(sb)
-					i = j
-					found = true
-					break
-				}
-			}
-			if found {
-				continue
-			}
-		}
-		// Inside a <script>/<style> block, non-text siblings (BranchNode,
-		// ActionNode, CommentNode) are spliced verbatim from raw source —
-		// equivalent to being wrapped in an implicit ignore-start/ignore-end.
-		// TextNodes go through their existing verbatim paths in writeTextLine.
-		if sb.rawContentTag != "" {
-			if _, isText := n.(*TextNode); !isText {
-				src := l.tr.text
-				start := rawNodeStart(n, src)
-				end := rawNodeEnd(n, src)
-				if start >= 0 && end > start && end <= len(src) {
-					sb.WriteString(src[start:end])
-					continue
-				}
-			}
+		if skipTo, handled := tryWriteIgnoreBlock(l, sb, i); handled {
+			i = skipTo
+			continue
 		}
 		// A pending right-trim only consumes immediately adjacent text;
 		// if the next sibling is a non-text node, the trim has nothing
@@ -569,482 +421,171 @@ func (l *ListNode) writeTo(sb *printer) {
 	}
 }
 
-// TextNode holds plain text.
-type TextNode struct {
-	NodeType
-	Pos
-	tr   *Tree
-	Line int
-	Text string // The text; may span newlines.
+// tryWriteIgnoreBlock writes the verbatim source from {{/*
+// gotmplfumpt-ignore-start */}} to its matching ignore-end directive if
+// the node at index i is the start directive. Returns the index of the
+// end directive and true on success; otherwise (0, false).
+func tryWriteIgnoreBlock(l *ListNode, sb *printer, i int) (int, bool) {
+	c, ok := l.Nodes[i].(*CommentNode)
+	if !ok || !strings.Contains(c.Text, directiveIgnoreStart) {
+		return 0, false
+	}
+	for j := i + 1; j < len(l.Nodes); j++ {
+		c2, ok := l.Nodes[j].(*CommentNode)
+		if !ok || !strings.Contains(c2.Text, directiveIgnoreEnd) {
+			continue
+		}
+		writeIgnoreBlockBody(l, sb, c, c2)
+		return j, true
+	}
+	return 0, false
+}
+
+func writeIgnoreBlockBody(l *ListNode, sb *printer, start, end *CommentNode) {
+	src := l.tr.text
+	cStart := rawNodeStart(start, src)
+	c2End := rawNodeEnd(end, src)
+	if cStart >= 0 && c2End > cStart && c2End <= len(src) {
+		// Preserve user-set indentation for the ignore block.
+		lineStart := strings.LastIndexByte(src[:cStart], '\n') + 1
+		userIndent := src[lineStart:cStart]
+		if isAllWhitespace(userIndent) {
+			_, _ = sb.WriteString(userIndent)
+		}
+		_, _ = sb.WriteString(src[cStart:c2End])
+		return
+	}
+	// Defensive fallback: format the start and end directives normally.
+	start.writeTo(sb)
+	end.writeTo(sb)
 }
 
 func (t *Tree) newText(pos Pos, text string, line int) *TextNode {
 	return &TextNode{tr: t, NodeType: NodeText, Pos: pos, Line: line, Text: text}
 }
 
-func (t *TextNode) lineNumber() int {
-	return t.Line
-}
+// String returns the verbatim text.
+func (t *TextNode) String() string { return t.Text }
 
-func (t *TextNode) String() string {
-	return fmt.Sprintf(textFormat, t.Text)
-}
-
-type rawLineType int
-
-const (
-	rawNone    rawLineType = iota
-	rawTagLine             // the <script>/<style> or </script>/</style> line itself
-	rawContent             // content between the open and close tags
-)
-
-type rawContentRange struct {
-	openLine  int
-	closeLine int
-}
-
-// findRawContentRanges finds <script> and <style> blocks where both
-// opening and closing tags are in the same TextNode (no template actions).
-func findRawContentRanges(lines []string) []rawContentRange {
-	var ranges []rawContentRange
-	skip := -1
-	for i, line := range lines {
-		if i <= skip {
-			continue
-		}
-		trimmed := strings.TrimLeft(line, " \t")
-		lower := strings.ToLower(trimmed)
-		for tag := range rawContentElements {
-			if strings.HasPrefix(lower, "<"+tag) && !strings.HasPrefix(lower, "</"+tag) {
-				closeTag := "</" + tag + ">"
-				for j := i + 1; j < len(lines); j++ {
-					if strings.Contains(strings.ToLower(lines[j]), closeTag) {
-						ranges = append(ranges, rawContentRange{openLine: i, closeLine: j})
-						skip = j
-						break
-					}
-				}
-				break
-			}
-		}
-	}
-	return ranges
-}
-
-func rawLineKind(lineIdx int, ranges []rawContentRange) rawLineType {
-	for _, r := range ranges {
-		if lineIdx == r.openLine || lineIdx == r.closeLine {
-			return rawTagLine
-		}
-		if lineIdx > r.openLine && lineIdx < r.closeLine {
-			return rawContent
-		}
-	}
-	return rawNone
-}
+func (t *TextNode) lineNumber() int { return t.Line }
 
 func (t *TextNode) writeTo(sb *printer) {
 	text := t.Text
-	// Right trim: strip leading whitespace from text following a -}} delimiter.
 	if sb.rightTrimPending {
 		text = strings.TrimLeft(text, " \t\n\r")
 		sb.rightTrimPending = false
 	}
-	lines := strings.Split(text, "\n")
-
-	// Find raw content element ranges (<script>, <style>) where both
-	// opening and closing tags are in this TextNode. These have no
-	// template actions inside, so their content is preserved verbatim.
-	rawRanges := findRawContentRanges(lines)
-
-	for i, line := range lines {
-		if i == 0 {
-			sb.writeTextFirstLine(line)
-			// Handle pending auto-close tag. Only auto-close when this text
-			// is the last node in its list (meaning the tag closes right
-			// before {{ end }}, with no content after). If more nodes follow,
-			// or the close tag already appears on a later line of this same
-			// TextNode, the tag has actual content and a proper closing tag.
-			if sb.pendingCloseTag != "" {
-				closeTag := "</" + sb.pendingCloseTag + ">"
-				hasCloseAhead := false
-				for _, rest := range lines[1:] {
-					if strings.Contains(strings.ToLower(rest), closeTag) {
-						hasCloseAhead = true
-						break
-					}
-				}
-				if sb.isLastInList && !hasCloseAhead {
-					sb.writePendingCloseTag()
-				} else {
-					sb.htmlDepth++ // Count as normal opening tag.
-					sb.pendingCloseTag = ""
-				}
-			}
-		} else {
-			sb.writeTextLine(line, rawLineKind(i, rawRanges), i == len(lines)-1)
-		}
-	}
+	_, _ = sb.WriteString(text)
 }
 
-// writeTextFirstLine writes the first line of a TextNode, which continues
-// on the same line as the previous node (no newline or indent is added).
-func (p *printer) writeTextFirstLine(line string) {
-	pre, post := p.computeHTMLDeltas(line)
-	p.htmlDepth += pre + post
-	if p.htmlDepth < 0 {
-		p.htmlDepth = 0
-	}
-	p.WriteString(line)
-	// Note: pendingCloseTag is handled by TextNode.writeTo after this call,
-	// where it can check the full source for a proper closing tag.
-}
-
-// writeTextLine writes a subsequent (non-first) line of a TextNode.
-func (p *printer) writeTextLine(line string, rawKind rawLineType, isLast bool) {
-	// Raw content inside <script>/<style>: write the body verbatim,
-	// preserving the user-set indentation.
-	if rawKind == rawContent {
-		p.WriteByte('\n')
-		p.WriteString(line)
-		return
-	}
-
-	// Cross-TextNode raw content: <script>/<style> with embedded template
-	// actions splits the body across multiple TextNodes, so the per-TextNode
-	// findRawContentRanges can't see the matching close. Preserve body lines
-	// verbatim until the closing tag is reached.
-	if p.rawContentTag != "" && rawKind == rawNone {
-		closeTag := "</" + p.rawContentTag + ">"
-		if !strings.Contains(strings.ToLower(line), closeTag) {
-			p.WriteByte('\n')
-			p.WriteString(line)
-			return
-		}
-		// Closing tag line — fall through to preserve-indent path below.
-	}
-
-	trimmed := strings.TrimLeft(line, " \t")
-	if trimmed == "" {
-		p.WriteByte('\n')
-		return
-	}
-
-	// <script>/<style> tag lines (open or close) preserve the user-set
-	// indentation. Cases:
-	//   - rawTagLine: same-TextNode raw range tag line.
-	//   - p.rawContentTag set: closing tag for a cross-TextNode block.
-	//   - otherwise: an opening tag that begins a cross-TextNode block.
-	if rawKind == rawTagLine || isRawContentTagLine(trimmed, p.rawContentTag) {
-		// Update html scanner state (depth, rawContentTag) but discard the
-		// depth deltas — raw content lines are written verbatim.
-		p.computeHTMLDeltas(trimmed)
-		p.WriteByte('\n')
-		p.WriteString(line)
-		return
-	}
-
-	// Strip trailing whitespace from the last line of the TextNode,
-	// which sits between content and the next template action.
-	// Preserve a trailing space when it looks like inline content
-	// spacing (e.g. "* {{ .Name }}") rather than indentation
-	// between tags and actions (e.g. "</ul>\t\t{{ end }}").
-	if isLast {
-		t := strings.TrimRight(trimmed, " \t")
-		if t == "" {
-			return
-		}
-		tail := trimmed[len(t):]
-		if strings.ContainsRune(tail, '\t') {
-			trimmed = t
-		} else if len(tail) > 0 {
-			trimmed = t + " "
-		}
-	}
-
-	// Split the line at tag boundaries where depth drops,
-	// so closing tags that end a nesting level get their own line.
-	for _, seg := range p.splitHTMLLine(trimmed) {
-		p.WriteByte('\n')
-		p.writeHTMLSegment(seg, rawKind == rawTagLine)
-	}
-}
-
-// isRawContentTagLine reports whether trimmed (with leading whitespace already
-// removed) is a <script>/<style> opening tag line, or the matching closing tag
-// for an active cross-TextNode raw block.
-func isRawContentTagLine(trimmed string, currentRawTag string) bool {
-	lowered := strings.ToLower(trimmed)
-	if currentRawTag != "" {
-		prefix := "</" + currentRawTag
-		if strings.HasPrefix(lowered, prefix) {
-			after := lowered[len(prefix):]
-			if after == "" || after[0] == '>' || after[0] == ' ' || after[0] == '\t' {
-				return true
-			}
-		}
-	}
-	for tag := range rawContentElements {
-		prefix := "<" + tag
-		if strings.HasPrefix(lowered, prefix) && !strings.HasPrefix(lowered, "</") {
-			after := lowered[len(prefix):]
-			if after == "" || after[0] == '>' || after[0] == ' ' || after[0] == '\t' {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// writeHTMLSegment writes a single segment of an HTML line, computing
-// indentation from the HTML tag depth.
-func (p *printer) writeHTMLSegment(seg string, suppressDepth bool) {
-	wasInTag := p.html.inTag
-	pre, post := p.computeHTMLDeltas(seg)
-	if suppressDepth {
-		pre = 0
-		post = 0
-	}
-	p.htmlDepth += pre
-	if p.htmlDepth < 0 {
-		p.htmlDepth = 0
-	}
-	extra := 0
-	if wasInTag && len(seg) > 0 && seg[0] != '>' && !strings.HasPrefix(seg, "/>") {
-		// Continuation line inside a multiline HTML tag with attribute
-		// content — indent one level deeper. Lines that are just the
-		// closing bracket (> or />) stay at the tag's indent level.
-		extra = 1
-	}
-	p.WriteString(indent(p.totalIndent() + extra))
-	p.WriteString(seg)
-	p.writePendingCloseTag()
-	p.htmlDepth += post
-	if p.htmlDepth < 0 {
-		p.htmlDepth = 0
-	}
-}
-
-// writePendingCloseTag appends an auto-closing tag if one is pending.
-func (p *printer) writePendingCloseTag() {
-	if p.pendingCloseTag != "" {
-		p.WriteString("</" + p.pendingCloseTag + ">")
-		p.pendingCloseTag = ""
-	}
-}
-
-// splitHTMLLine splits a line into segments where a closing tag would decrease
-// depth below the line's starting depth. For example, "<div></div></div>" becomes
-// ["<div></div>", "</div>"] because the second </div> closes a tag from a previous line.
-func (p *printer) splitHTMLLine(line string) []string {
-	// Peek ahead with a temporary scanner copy — computeHTMLDeltas will
-	// process the actual segments and update the real scanner state.
-	tmp := p.html.save()
-
-	depth := 0
-	var splits []int
-	tmp.scanText(line, func(tag tagEvent) {
-		if tag.SelfClose || tag.IsVoid || rawContentElements[tag.Name] {
-			return
-		}
-		if tag.IsClose {
-			if voidElements[tag.Name] {
-				return
-			}
-			depth--
-		} else {
-			depth++
-		}
-		if depth < 0 {
-			// Find the '<' that started this tag within the current line.
-			// We can't use tag.StartIdx because it may refer to a previous
-			// scanText call if the tag opened on a prior line.
-			lt := strings.LastIndex(line[:tag.EndIdx], "<")
-			if lt >= 0 && (len(splits) == 0 || lt > splits[len(splits)-1]) {
-				splits = append(splits, lt)
-			}
-			depth = 0
-		}
-	})
-
-	if len(splits) == 0 {
-		return []string{line}
-	}
-	var segments []string
-	start := 0
-	for _, pos := range splits {
-		if pos > start {
-			segments = append(segments, line[start:pos])
-		}
-		start = pos
-	}
-	segments = append(segments, line[start:])
-	return segments
-}
-
-func (t *TextNode) tree() *Tree {
-	return t.tr
-}
-
-// CommentNode holds a comment.
-type CommentNode struct {
-	NodeType
-	Pos
-	tr   *Tree
-	Line int
-	Text string // Comment text.
-	Trim trim   // Trim markers.
-}
+func (t *TextNode) tree() *Tree { return t.tr }
 
 func (t *Tree) newComment(pos Pos, text string, tr trim, line int) *CommentNode {
 	return &CommentNode{tr: t, NodeType: NodeComment, Pos: pos, Line: line, Text: text, Trim: tr}
 }
 
-func (c *CommentNode) lineNumber() int {
-	return c.Line
-}
-
+// String renders the comment as source.
 func (c *CommentNode) String() string {
 	sb := newPrinter()
 	c.writeTo(sb)
 	return sb.String()
 }
 
+func (c *CommentNode) lineNumber() int { return c.Line }
+
 func (c *CommentNode) writeTo(sb *printer) {
 	sb.writeBranchIndent()
 	if c.Trim.left {
-		sb.WriteString("{{- ")
+		_, _ = sb.WriteString("{{- ")
 	} else {
-		sb.WriteString("{{")
+		_, _ = sb.WriteString("{{")
 	}
-	sb.WriteString(c.Text)
+	_, _ = sb.WriteString(c.Text)
 	if c.Trim.right {
-		sb.WriteString(" -}}")
+		_, _ = sb.WriteString(" -}}")
 	} else {
-		sb.WriteString("}}")
+		_, _ = sb.WriteString("}}")
 	}
 }
 
-func (c *CommentNode) tree() *Tree {
-	return c.tr
-}
-
-// PipeNode holds a pipeline with optional declaration
-type PipeNode struct {
-	NodeType
-	Pos
-	tr       *Tree
-	Line     int             // The line number in the input. Deprecated: Kept for compatibility.
-	IsAssign bool            // The variables are being assigned, not declared.
-	Decl     []*VariableNode // Variables in lexical order.
-	Cmds     []*CommandNode  // The commands in lexical order.
-}
+func (c *CommentNode) tree() *Tree { return c.tr }
 
 func (t *Tree) newPipeline(pos Pos, line int, vars []*VariableNode) *PipeNode {
 	return &PipeNode{tr: t, NodeType: NodePipe, Pos: pos, Line: line, Decl: vars}
 }
 
-func (p *PipeNode) lineNumber() int {
-	return p.Line
-}
-
-func (p *PipeNode) append(command *CommandNode) {
-	p.Cmds = append(p.Cmds, command)
-}
-
+// String renders the pipeline as source.
 func (p *PipeNode) String() string {
 	sb := newPrinter()
 	p.writeTo(sb)
 	return sb.String()
 }
 
+func (p *PipeNode) lineNumber() int { return p.Line }
+
+func (p *PipeNode) append(command *CommandNode) {
+	p.Cmds = append(p.Cmds, command)
+}
+
 func (p *PipeNode) writeTo(sb *printer) {
 	if len(p.Decl) > 0 {
 		for i, v := range p.Decl {
 			if i > 0 {
-				sb.WriteString(", ")
+				_, _ = sb.WriteString(", ")
 			}
 			v.writeTo(sb)
 		}
 		if p.IsAssign {
-			sb.WriteString(" = ")
+			_, _ = sb.WriteString(" = ")
 		} else {
-			sb.WriteString(" := ")
+			_, _ = sb.WriteString(" := ")
 		}
 	}
 	for i, c := range p.Cmds {
 		if i > 0 {
-			sb.WriteString(" | ")
+			_, _ = sb.WriteString(" | ")
 		}
 		c.writeTo(sb)
 	}
 }
 
-func (p *PipeNode) tree() *Tree {
-	return p.tr
-}
-
-// ActionNode holds an action (something bounded by delimiters).
-// Control actions have their own nodes; ActionNode represents simple
-// ones such as field evaluations and parenthesized pipelines.
-type ActionNode struct {
-	NodeType
-	Pos
-	tr   *Tree
-	Line int       // The line number in the input. Deprecated: Kept for compatibility.
-	Pipe *PipeNode // The pipeline in the action.
-	Trim trim
-}
+func (p *PipeNode) tree() *Tree { return p.tr }
 
 func (t *Tree) newAction(pos Pos, line int, pipe *PipeNode, trim trim) *ActionNode {
 	return &ActionNode{tr: t, NodeType: NodeAction, Pos: pos, Line: line, Pipe: pipe, Trim: trim}
 }
 
-func (a *ActionNode) lineNumber() int {
-	return a.Line
-}
-
+// String renders the action as source.
 func (a *ActionNode) String() string {
 	sb := newPrinter()
 	a.writeTo(sb)
 	return sb.String()
 }
 
+func (a *ActionNode) lineNumber() int { return a.Line }
+
 func (a *ActionNode) writeTo(sb *printer) {
 	sb.writeBranchIndent()
 	sb.writeAction("", a.Pipe, a.Trim)
 }
 
-func (a *ActionNode) tree() *Tree {
-	return a.tr
-}
-
-// CommandNode holds a command (a pipeline inside an evaluating action).
-type CommandNode struct {
-	NodeType
-	Pos
-	tr   *Tree
-	Line int
-	Args []Node // Arguments in lexical order: Identifier, field, or constant.
-	Trim trim
-}
+func (a *ActionNode) tree() *Tree { return a.tr }
 
 func (t *Tree) newCommand(pos Pos, line int) *CommandNode {
 	return &CommandNode{tr: t, NodeType: NodeCommand, Pos: pos, Line: line}
 }
 
-func (c *CommandNode) lineNumber() int {
-	return c.Line
-}
-
-func (c *CommandNode) append(arg Node) {
-	c.Args = append(c.Args, arg)
-}
-
+// String renders the command as source.
 func (c *CommandNode) String() string {
 	sb := newPrinter()
 	c.writeTo(sb)
 	return sb.String()
+}
+
+func (c *CommandNode) lineNumber() int { return c.Line }
+
+func (c *CommandNode) append(arg Node) {
+	c.Args = append(c.Args, arg)
 }
 
 func (c *CommandNode) writeTo(sb *printer) {
@@ -1056,639 +597,125 @@ func (c *CommandNode) writeTo(sb *printer) {
 		line := lineno(arg)
 		if i > 0 {
 			if line > prevLine {
-				sb.WriteString("\n")
+				_, _ = sb.WriteString("\n")
 				sb.WritePrefix()
 			} else {
-				sb.WriteByte(' ')
+				_ = sb.WriteByte(' ')
 			}
 		}
 		prevLine = line
-		if arg, ok := arg.(*PipeNode); ok {
-			sb.WriteByte('(')
+		if pipe, ok := arg.(*PipeNode); ok {
+			_ = sb.WriteByte('(')
 			before := strings.Count(sb.String(), "\n")
-			arg.writeTo(sb)
+			pipe.writeTo(sb)
 			after := strings.Count(sb.String(), "\n")
-			if ok && before != after {
-				sb.WriteString("\n")
+			if before != after {
+				_, _ = sb.WriteString("\n")
 				sb.WritePrefix()
 			}
-			sb.WriteByte(')')
+			_ = sb.WriteByte(')')
 			continue
 		}
 		arg.writeTo(sb)
 	}
 }
 
-func (c *CommandNode) tree() *Tree {
-	return c.tr
-}
-
-// IdentifierNode holds an identifier.
-type IdentifierNode struct {
-	NodeType
-	Pos
-	tr    *Tree
-	Line  int
-	Ident string // The identifier's name.
-}
-
-// NewIdentifier returns a new IdentifierNode with the given identifier name.
-func NewIdentifier(ident string) *IdentifierNode {
-	return &IdentifierNode{NodeType: NodeIdentifier, Ident: ident}
-}
-
-// SetPos sets the position. NewIdentifier is a public method so we can't modify its signature.
-// Chained for convenience.
-func (i *IdentifierNode) SetPos(pos Pos) *IdentifierNode {
-	i.Pos = pos
-	return i
-}
-
-// SetTree sets the parent tree for the node. NewIdentifier is a public method so we can't modify its signature.
-// Chained for convenience.
-func (i *IdentifierNode) SetTree(t *Tree) *IdentifierNode {
-	i.tr = t
-	return i
-}
-
-// SetLine sets the line number. NewIdentifier is a public method so we can't modify its signature.
-// Chained for convenience.
-func (i *IdentifierNode) SetLine(line int) *IdentifierNode {
-	i.Line = line
-	return i
-}
-
-func (i *IdentifierNode) lineNumber() int {
-	return i.Line
-}
-
-func (i *IdentifierNode) String() string {
-	return i.Ident
-}
-
-func (i *IdentifierNode) writeTo(sb *printer) {
-	sb.WriteString(i.String())
-}
-
-func (i *IdentifierNode) tree() *Tree {
-	return i.tr
-}
-
-// VariableNode holds a list of variable names, possibly with chained field
-// accesses. The dollar sign is part of the (first) name.
-type VariableNode struct {
-	NodeType
-	Pos
-	tr    *Tree
-	Line  int
-	Ident []string // Variable name and fields in lexical order.
-}
-
-func (t *Tree) newVariable(pos Pos, ident string, line int) *VariableNode {
-	return &VariableNode{tr: t, NodeType: NodeVariable, Pos: pos, Line: line, Ident: strings.Split(ident, ".")}
-}
-
-func (v *VariableNode) lineNumber() int {
-	return v.Line
-}
-
-func (v *VariableNode) String() string {
-	sb := newPrinter()
-	v.writeTo(sb)
-	return sb.String()
-}
-
-func (v *VariableNode) writeTo(sb *printer) {
-	for i, id := range v.Ident {
-		if i > 0 {
-			sb.WriteByte('.')
-		}
-		sb.WriteString(id)
-	}
-}
-
-func (v *VariableNode) tree() *Tree {
-	return v.tr
-}
-
-// DotNode holds the special identifier '.'.
-type DotNode struct {
-	NodeType
-	Pos
-	tr   *Tree
-	Line int
-}
-
-func (t *Tree) newDot(pos Pos, line int) *DotNode {
-	return &DotNode{tr: t, NodeType: NodeDot, Pos: pos, Line: line}
-}
-
-func (d *DotNode) lineNumber() int {
-	return d.Line
-}
-
-func (d *DotNode) Type() NodeType {
-	// Override method on embedded NodeType for API compatibility.
-
-	return NodeDot
-}
-
-func (d *DotNode) String() string {
-	return "."
-}
-
-func (d *DotNode) writeTo(sb *printer) {
-	sb.WriteString(d.String())
-}
-
-func (d *DotNode) tree() *Tree {
-	return d.tr
-}
-
-// NilNode holds the special identifier 'nil' representing an untyped nil constant.
-type NilNode struct {
-	NodeType
-	Pos
-	tr   *Tree
-	Line int
-}
-
-func (t *Tree) newNil(pos Pos, line int) *NilNode {
-	return &NilNode{tr: t, NodeType: NodeNil, Pos: pos, Line: line}
-}
-
-func (n *NilNode) lineNumber() int {
-	return n.Line
-}
-
-func (n *NilNode) Type() NodeType {
-	// Override method on embedded NodeType for API compatibility.
-	return NodeNil
-}
-
-func (n *NilNode) String() string {
-	return "nil"
-}
-
-func (n *NilNode) writeTo(sb *printer) {
-	sb.WriteString(n.String())
-}
-
-func (n *NilNode) tree() *Tree {
-	return n.tr
-}
-
-// FieldNode holds a field (identifier starting with '.').
-// The names may be chained ('.x.y').
-// The period is dropped from each ident.
-type FieldNode struct {
-	NodeType
-	Pos
-	tr    *Tree
-	Line  int
-	Ident []string // The identifiers in lexical order.
-}
-
-func (t *Tree) newField(pos Pos, ident string, line int) *FieldNode {
-	return &FieldNode{tr: t, NodeType: NodeField, Pos: pos, Line: line, Ident: strings.Split(ident[1:], ".")} // [1:] to drop leading period
-}
-
-func (f *FieldNode) lineNumber() int {
-	return f.Line
-}
-
-func (f *FieldNode) String() string {
-	sb := newPrinter()
-	f.writeTo(sb)
-	return sb.String()
-}
-
-func (f *FieldNode) writeTo(sb *printer) {
-	for _, id := range f.Ident {
-		sb.WriteByte('.')
-		sb.WriteString(id)
-	}
-}
-
-func (f *FieldNode) tree() *Tree {
-	return f.tr
-}
-
-// ChainNode holds a term followed by a chain of field accesses (identifier starting with '.').
-// The names may be chained ('.x.y').
-// The periods are dropped from each ident.
-type ChainNode struct {
-	NodeType
-	Pos
-	tr    *Tree
-	Line  int
-	Node  Node
-	Field []string // The identifiers in lexical order.
-}
-
-func (t *Tree) newChain(pos Pos, node Node, line int) *ChainNode {
-	return &ChainNode{tr: t, NodeType: NodeChain, Pos: pos, Line: line, Node: node}
-}
-
-func (c *ChainNode) lineNumber() int {
-	return c.Line
-}
-
-// Add adds the named field (which should start with a period) to the end of the chain.
-func (c *ChainNode) Add(field string) {
-	if len(field) == 0 || field[0] != '.' {
-		panic("no dot in field")
-	}
-	field = field[1:] // Remove leading dot.
-	if field == "" {
-		panic("empty field")
-	}
-	c.Field = append(c.Field, field)
-}
-
-func (c *ChainNode) String() string {
-	sb := newPrinter()
-	c.writeTo(sb)
-	return sb.String()
-}
-
-func (c *ChainNode) writeTo(sb *printer) {
-	if _, ok := c.Node.(*PipeNode); ok {
-		sb.WriteByte('(')
-		c.Node.writeTo(sb)
-		sb.WriteByte(')')
-	} else {
-		c.Node.writeTo(sb)
-	}
-	for _, field := range c.Field {
-		sb.WriteByte('.')
-		sb.WriteString(field)
-	}
-}
-
-func (c *ChainNode) tree() *Tree {
-	return c.tr
-}
-
-// BoolNode holds a boolean constant.
-type BoolNode struct {
-	NodeType
-	Pos
-	tr   *Tree
-	Line int
-	True bool // The value of the boolean constant.
-}
-
-func (t *Tree) newBool(pos Pos, true bool, line int) *BoolNode {
-	return &BoolNode{tr: t, NodeType: NodeBool, Pos: pos, Line: line, True: true}
-}
-
-func (b *BoolNode) lineNumber() int {
-	return b.Line
-}
-
-func (b *BoolNode) String() string {
-	if b.True {
-		return "true"
-	}
-	return "false"
-}
-
-func (b *BoolNode) writeTo(sb *printer) {
-	sb.WriteString(b.String())
-}
-
-func (b *BoolNode) tree() *Tree {
-	return b.tr
-}
-
-// NumberNode holds a number: signed or unsigned integer, float, or complex.
-// The value is parsed and stored under all the types that can represent the value.
-// This simulates in a small amount of code the behavior of Go's ideal constants.
-type NumberNode struct {
-	NodeType
-	Pos
-	tr         *Tree
-	Line       int
-	IsInt      bool       // Number has an integral value.
-	IsUint     bool       // Number has an unsigned integral value.
-	IsFloat    bool       // Number has a floating-point value.
-	IsComplex  bool       // Number is complex.
-	Int64      int64      // The signed integer value.
-	Uint64     uint64     // The unsigned integer value.
-	Float64    float64    // The floating-point value.
-	Complex128 complex128 // The complex value.
-	Text       string     // The original textual representation from the input.
-}
-
-func (n *NumberNode) lineNumber() int {
-	return n.Line
-}
-
-func (t *Tree) newNumber(pos Pos, text string, typ itemType, line int) (*NumberNode, error) {
-	n := &NumberNode{tr: t, NodeType: NodeNumber, Pos: pos, Line: line, Text: text}
-	switch typ {
-	case itemCharConstant:
-		rune, _, tail, err := strconv.UnquoteChar(text[1:], text[0])
-		if err != nil {
-			return nil, err
-		}
-		if tail != "'" {
-			return nil, fmt.Errorf("malformed character constant: %s", text)
-		}
-		n.Int64 = int64(rune)
-		n.IsInt = true
-		n.Uint64 = uint64(rune)
-		n.IsUint = true
-		n.Float64 = float64(rune) // odd but those are the rules.
-		n.IsFloat = true
-		return n, nil
-	case itemComplex:
-		// fmt.Sscan can parse the pair, so let it do the work.
-		if _, err := fmt.Sscan(text, &n.Complex128); err != nil {
-			return nil, err
-		}
-		n.IsComplex = true
-		n.simplifyComplex()
-		return n, nil
-	}
-	// Imaginary constants can only be complex unless they are zero.
-	if len(text) > 0 && text[len(text)-1] == 'i' {
-		f, err := strconv.ParseFloat(text[:len(text)-1], 64)
-		if err == nil {
-			n.IsComplex = true
-			n.Complex128 = complex(0, f)
-			n.simplifyComplex()
-			return n, nil
-		}
-	}
-	// Do integer test first so we get 0x123 etc.
-	u, err := strconv.ParseUint(text, 0, 64) // will fail for -0; fixed below.
-	if err == nil {
-		n.IsUint = true
-		n.Uint64 = u
-	}
-	i, err := strconv.ParseInt(text, 0, 64)
-	if err == nil {
-		n.IsInt = true
-		n.Int64 = i
-		if i == 0 {
-			n.IsUint = true // in case of -0.
-			n.Uint64 = u
-		}
-	}
-	// If an integer extraction succeeded, promote the float.
-	if n.IsInt {
-		n.IsFloat = true
-		n.Float64 = float64(n.Int64)
-	} else if n.IsUint {
-		n.IsFloat = true
-		n.Float64 = float64(n.Uint64)
-	} else {
-		f, err := strconv.ParseFloat(text, 64)
-		if err == nil {
-			// If we parsed it as a float but it looks like an integer,
-			// it's a huge number too large to fit in an int. Reject it.
-			if !strings.ContainsAny(text, ".eEpP") {
-				return nil, fmt.Errorf("integer overflow: %q", text)
-			}
-			n.IsFloat = true
-			n.Float64 = f
-			// If a floating-point extraction succeeded, extract the int if needed.
-			if !n.IsInt && float64(int64(f)) == f {
-				n.IsInt = true
-				n.Int64 = int64(f)
-			}
-			if !n.IsUint && float64(uint64(f)) == f {
-				n.IsUint = true
-				n.Uint64 = uint64(f)
-			}
-		}
-	}
-	if !n.IsInt && !n.IsUint && !n.IsFloat {
-		return nil, fmt.Errorf("illegal number syntax: %q", text)
-	}
-	return n, nil
-}
-
-// simplifyComplex pulls out any other types that are represented by the complex number.
-// These all require that the imaginary part be zero.
-func (n *NumberNode) simplifyComplex() {
-	n.IsFloat = imag(n.Complex128) == 0
-	if n.IsFloat {
-		n.Float64 = real(n.Complex128)
-		n.IsInt = float64(int64(n.Float64)) == n.Float64
-		if n.IsInt {
-			n.Int64 = int64(n.Float64)
-		}
-		n.IsUint = float64(uint64(n.Float64)) == n.Float64
-		if n.IsUint {
-			n.Uint64 = uint64(n.Float64)
-		}
-	}
-}
-
-func (n *NumberNode) String() string {
-	return n.Text
-}
-
-func (n *NumberNode) writeTo(sb *printer) {
-	sb.WriteString(n.String())
-}
-
-func (n *NumberNode) tree() *Tree {
-	return n.tr
-}
-
-// StringNode holds a string constant. The value has been "unquoted".
-type StringNode struct {
-	NodeType
-	Pos
-	tr     *Tree
-	Line   int
-	Quoted string // The original text of the string, with quotes.
-	Text   string // The string, after quote processing.
-}
-
-func (t *Tree) newString(pos Pos, orig, text string, line int) *StringNode {
-	return &StringNode{tr: t, NodeType: NodeString, Pos: pos, Line: line, Quoted: orig, Text: text}
-}
-
-func (s *StringNode) lineNumber() int {
-	return s.Line
-}
-
-func (s *StringNode) String() string {
-	return s.Quoted
-}
-
-func (s *StringNode) writeTo(sb *printer) {
-	sb.WriteString(s.String())
-}
-
-func (s *StringNode) tree() *Tree {
-	return s.tr
-}
-
-// EndNode represents an {{end}} action.
-type EndNode struct {
-	NodeType
-	Pos
-	tr   *Tree
-	Line int
-	Trim trim
-}
+func (c *CommandNode) tree() *Tree { return c.tr }
 
 func (t *Tree) newEnd(pos Pos, trim trim, line int) *EndNode {
 	return &EndNode{tr: t, NodeType: nodeEnd, Pos: pos, Line: line, Trim: trim}
 }
 
-func (e *EndNode) lineNumber() int {
-	return e.Line
-}
-
+// String renders the {{end}} action.
 func (e *EndNode) String() string {
 	sb := newPrinter()
 	e.writeTo(sb)
 	return sb.String()
 }
 
+func (e *EndNode) lineNumber() int { return e.Line }
+
 func (e *EndNode) writeTo(sb *printer) {
 	sb.writeControlIndent()
-	sb.WriteString(e.Trim.leftDelim())
-	sb.WriteString("end")
-	sb.WriteString(e.Trim.rightDelim())
-	if e.Trim.right && sb.html.inTag {
+	_, _ = sb.WriteString(e.Trim.leftDelim())
+	_, _ = sb.WriteString("end")
+	_, _ = sb.WriteString(e.Trim.rightDelim())
+	if e.Trim.right {
 		sb.rightTrimPending = true
 	}
 }
 
-func (e *EndNode) tree() *Tree {
-	return e.tr
-}
-
-// ElseNode represents an {{else}}, {{else if}}, or {{else with}} action. Does not appear in the final tree.
-type ElseNode struct {
-	NodeType
-	Pos
-	tr      *Tree
-	Keyword string    // "if" or "with"; empty for bare {{ else }}
-	Pipe    *PipeNode // guard check, may be nil for bare {{ else }}
-	List    *ListNode // stuff to execute if pipe holds
-	Line    int       // The line number in the input. Deprecated: Kept for compatibility.
-	Trim    trim
-}
+func (e *EndNode) tree() *Tree { return e.tr }
 
 func (t *Tree) newElse(pos Pos, line int, keyword string, pipe *PipeNode, trim trim) *ElseNode {
-	return &ElseNode{tr: t, NodeType: nodeElse, Pos: pos, Line: line, Keyword: keyword, Pipe: pipe, Trim: trim}
+	return &ElseNode{
+		tr:       t,
+		NodeType: nodeElse,
+		Pos:      pos,
+		Line:     line,
+		Keyword:  keyword,
+		Pipe:     pipe,
+		Trim:     trim,
+	}
 }
 
-func (e *ElseNode) lineNumber() int {
-	return e.Line
-}
+// Type overrides the embedded NodeType to expose the (unexported)
+// nodeElse value for API compatibility.
+func (e *ElseNode) Type() NodeType { return nodeElse }
 
-func (e *ElseNode) Type() NodeType {
-	return nodeElse
-}
-
+// String renders the {{else}} action as source.
 func (e *ElseNode) String() string {
 	sb := newPrinter()
 	e.writeTo(sb)
 	return sb.String()
 }
 
+func (e *ElseNode) lineNumber() int { return e.Line }
+
 func (e *ElseNode) writeTo(sb *printer) {
-	inAttrValue := sb.html.inTag && sb.html.inAttrValue
 	sb.writeControlIndent()
-	sb.WriteString(e.Trim.leftDelim())
-	sb.WriteString("else")
+	_, _ = sb.WriteString(e.Trim.leftDelim())
+	_, _ = sb.WriteString("else")
 	if e.Pipe != nil {
-		sb.WriteString(" ")
-		sb.WriteString(e.Keyword)
+		_, _ = sb.WriteString(" ")
+		_, _ = sb.WriteString(e.Keyword)
 		if len(e.Pipe.Cmds) > 0 {
-			sb.WriteByte(' ')
+			_ = sb.WriteByte(' ')
 			e.Pipe.writeTo(sb)
 		}
 	}
-	sb.WriteString(e.Trim.rightDelim())
-	if sb.html.inTag && !sb.html.inAttrValue && !sb.inOneLiner {
-		sb.htmlTagHadActions = true
-	}
-	savedHTMLDepth := sb.htmlDepth
-	if !inAttrValue {
-		sb.branchDepth++
-	}
+	_, _ = sb.WriteString(e.Trim.rightDelim())
+	sb.branchDepth++
 	e.List.writeTo(sb)
-	if !inAttrValue {
-		sb.branchDepth--
-	}
-	sb.htmlDepth = savedHTMLDepth
+	sb.branchDepth--
 }
 
-func (e *ElseNode) tree() *Tree {
-	return e.tr
-}
+func (e *ElseNode) tree() *Tree { return e.tr }
 
-// BranchNode is the common representation of if, range, and with.
-type BranchNode struct {
-	NodeType
-	Keyword string
-	Pos
-	tr    *Tree
-	Line  int         // The line number in the input. Deprecated: Kept for compatibility.
-	Pipe  *PipeNode   // The pipeline to be evaluated.
-	List  *ListNode   // What to execute if the value is non-empty.
-	Elses []*ElseNode // all else / else if lists
-	End   *EndNode
-	Trim  trim
-}
-
-func (b *BranchNode) lineNumber() int {
-	return b.Line
-}
-
+// String renders the branch as source.
 func (b *BranchNode) String() string {
 	sb := newPrinter()
 	b.writeTo(sb)
 	return sb.String()
 }
 
-func (b *BranchNode) writeTo(sb *printer) {
-	inAttrValue := sb.html.inTag && sb.html.inAttrValue
+func (b *BranchNode) lineNumber() int { return b.Line }
 
-	// Detect one-liner branches (start and end on the same source line).
+func (b *BranchNode) writeTo(sb *printer) {
+	// One-liner branches (open and end on the same source line) stay on
+	// a single line; multi-line branches put control structures on their
+	// own lines.
 	savedOneLiner := sb.inOneLiner
 	if lineno(b) == lineno(b.End) {
 		sb.inOneLiner = true
 	}
-
 	if sb.inOneLiner {
-		if sb.html.inTag && !sb.html.inAttrValue {
-			// One-liner inside HTML tag: indent as attribute if at start of line.
-			s := sb.String()
-			if len(s) == 0 || s[len(s)-1] == '\n' {
-				n := sb.totalIndent() + 1
-				if n > 0 {
-					sb.WriteString(indent(n))
-				}
-				sb.oneLinerHTMLIndent = true
-			}
-		} else {
-			// One-liner: add indent if at start of line, but don't force a newline.
-			sb.writeBranchIndent()
-		}
+		sb.writeBranchIndent()
 	} else {
 		sb.writeControlIndent()
 	}
-
 	sb.writeAction(b.Keyword, b.Pipe, b.Trim)
-
-	if sb.html.inTag && !sb.html.inAttrValue && !sb.inOneLiner {
-		sb.htmlTagHadActions = true
-	}
-
-	savedHTMLDepth := sb.htmlDepth
-	indentBody := !inAttrValue && !sb.inOneLiner && b.Keyword != "define"
+	indentBody := !sb.inOneLiner && b.Keyword != "define"
 	if indentBody {
 		sb.branchDepth++
 	}
@@ -1697,15 +724,10 @@ func (b *BranchNode) writeTo(sb *printer) {
 		sb.branchDepth--
 	}
 	for _, e := range b.Elses {
-		sb.htmlDepth = savedHTMLDepth
 		e.writeTo(sb)
 	}
-	sb.htmlDepth = savedHTMLDepth
 	b.End.writeTo(sb)
 	sb.inOneLiner = savedOneLiner
-	sb.oneLinerHTMLIndent = false
 }
 
-func (b *BranchNode) tree() *Tree {
-	return b.tr
-}
+func (b *BranchNode) tree() *Tree { return b.tr }

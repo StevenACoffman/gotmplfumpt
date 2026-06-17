@@ -1,41 +1,45 @@
-package format
+package format_test
 
 import (
 	"flag"
-	"html/template"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"text/template"
+
+	"github.com/StevenACoffman/gotmplfumpt/internal/format"
 )
 
-// To update the golden files, run `go test -update`.
-var (
-	update = flag.Bool("update", false, "update the golden files")
-)
+const goldenWritePerm = 0o600
 
+// update is set via -update to overwrite golden outputs.
+var update = flag.Bool("update", false, "update the golden files")
+
+// TestGolden walks every fixture in testdata/golden/in, formats it, and
+// compares against the matching file under testdata/golden/out. The
+// per-file body is delegated to runGoldenCase to keep complexity bounded.
 func TestGolden(t *testing.T) {
 	if *update {
 		t.Log("Updating golden files...")
 	}
-
-	goldenDir := "golden"
+	// testdata is a special directory name the Go tool excludes from
+	// builds, so fixture files ending in .go don't get compiled.
+	goldenDir := filepath.Join("testdata", "golden")
 	goldenDirIn := filepath.Join(goldenDir, "in")
 	goldenDirOut := filepath.Join(goldenDir, "out")
 
 	if *update {
-		// Remove existing golden files.
 		if err := os.RemoveAll(goldenDirOut); err != nil {
-			t.Fatalf("failed to remove existing golden output directory: %v", err)
+			t.Fatalf("remove golden out: %v", err)
 		}
 		if err := os.MkdirAll(goldenDirOut, 0o755); err != nil {
-			t.Fatalf("failed to create golden output directory: %v", err)
+			t.Fatalf("mkdir golden out: %v", err)
 		}
 	}
 
-	// Read golden/in.
-	if err := filepath.Walk(goldenDirIn, func(path string, info fs.FileInfo, err error) error {
+	walkFn := func(path string, info fs.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -44,92 +48,77 @@ func TestGolden(t *testing.T) {
 		}
 		baseName := strings.TrimPrefix(path, goldenDirIn+string(os.PathSeparator))
 		t.Run(path, func(t *testing.T) {
-			testFormat := func(input string) {
-				// We may add some invalid test cases later, but for now assume all input files are valid Go text templates and try parsing them before formatting.
-				tryParseGoTextTemplate(t, input)
-
-				output, err := Format(input)
-				if err != nil {
-					t.Fatalf("failed to format template: %v", err)
-				}
-
-				goldenPath := filepath.Join(goldenDirOut, baseName)
-
-				if *update {
-					if err := os.WriteFile(goldenPath, []byte(output), 0o644); err != nil {
-						t.Fatalf("failed to write golden file: %v", err)
-					}
-				} else {
-					expected, err := os.ReadFile(goldenPath)
-					if err != nil {
-						t.Fatalf("failed to read golden file: %v", err)
-					}
-					if output != toUnixLineEndings(string(expected)) {
-						t.Errorf("output does not match golden file.\nGot:\n%s\nExpected:\n%s", output, expected)
-					}
-
-					// Format output again to check for idempotency.
-					output2, err := Format(output)
-					if err != nil {
-						t.Fatalf("failed to format output again: %v", err)
-					}
-					if output != output2 {
-						t.Errorf("output is not idempotent.\nFirst format:\n%s\nSecond format:\n%s", output, output2)
-					}
-
-					// Try parsing the output with Go's text/template to ensure it's valid.
-					tryParseGoTextTemplate(t, output)
-				}
-			}
-
-			b, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("failed to read input file: %v", err)
-			}
-			s := toUnixLineEndings(string(b))
-
-			testFormat(s)
-			if !*update {
-				testFormat(toWindowsLineEndings(s))
-			}
+			runGoldenCase(t, path, filepath.Join(goldenDirOut, baseName))
 		})
 		return nil
-	}); err != nil {
-		t.Fatalf("failed to walk golden/in: %v", err)
+	}
+	if err := filepath.Walk(goldenDirIn, walkFn); err != nil {
+		t.Fatalf("walk golden/in: %v", err)
 	}
 }
 
-func tryParseGoTextTemplate(t *testing.T, text string) {
-	// Needed for validation.
-	fn := func() string {
-		return "test"
-	}
-	funcMap := template.FuncMap{
-		"append":      fn,
-		"cond":        fn,
-		"css":         fn,
-		"default":     fn,
-		"diagrams":    fn,
-		"dict":        fn,
-		"errorf":      fn,
-		"foo":         fn,
-		"fingerprint": fn,
-		"first":       fn,
-		"hugo":        fn,
-		"js":          fn,
-		"reflect":     fn,
-		"resources":   fn,
-		"safeCSS":     fn,
-		"markdownify": fn,
-		"plainify":    fn,
-		"safeHTML":    fn,
-		"site":        fn,
-		"transform":   fn,
-		"where":       fn,
-	}
-
-	_, err := template.New("").Funcs(funcMap).Parse(text)
+// runGoldenCase loads one fixture, formats it (both unix and windows
+// line endings), and compares against the golden output.
+func runGoldenCase(t *testing.T, inputPath, goldenPath string) {
+	t.Helper()
+	b, err := os.ReadFile(inputPath)
 	if err != nil {
+		t.Fatalf("read input: %v", err)
+	}
+	unix := toUnixLineEndings(string(b))
+	checkFormatted(t, unix, goldenPath)
+	if !*update {
+		checkFormatted(t, toWindowsLineEndings(unix), goldenPath)
+	}
+}
+
+// checkFormatted runs Format on input, compares to the golden file (or
+// overwrites it when -update is set), then asserts idempotency.
+func checkFormatted(t *testing.T, input, goldenPath string) {
+	t.Helper()
+	tryParseGoTextTemplate(t, input)
+	output, err := format.Format(input)
+	if err != nil {
+		t.Fatalf("Format: %v", err)
+	}
+	if *update {
+		if err := os.WriteFile(goldenPath, []byte(output), goldenWritePerm); err != nil {
+			t.Fatalf("write golden: %v", err)
+		}
+		return
+	}
+	expected, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	if output != toUnixLineEndings(string(expected)) {
+		t.Errorf("output mismatch\nGot:\n%s\nExpected:\n%s", output, expected)
+	}
+	output2, err := format.Format(output)
+	if err != nil {
+		t.Fatalf("re-format: %v", err)
+	}
+	if output != output2 {
+		t.Errorf("not idempotent\nfirst:\n%s\nsecond:\n%s", output, output2)
+	}
+	tryParseGoTextTemplate(t, output)
+}
+
+// tryParseGoTextTemplate validates that text parses as a Go text/template.
+// Common Go-template helper names that code-generation templates often
+// reference are registered as stubs so the parser doesn't reject them;
+// the formatter never executes the template, so the stubs never run.
+func tryParseGoTextTemplate(t *testing.T, text string) {
+	t.Helper()
+	fn := func() string { return "" }
+	funcMap := template.FuncMap{
+		"append":  fn,
+		"default": fn,
+		"dict":    fn,
+		"first":   fn,
+		"where":   fn,
+	}
+	if _, err := template.New("").Funcs(funcMap).Parse(text); err != nil {
 		t.Fatal("Error parsing template:", err)
 	}
 }
