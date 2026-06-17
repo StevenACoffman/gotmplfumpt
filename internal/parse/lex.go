@@ -395,68 +395,71 @@ func lexInsideAction(l *lexer) stateFn {
 		return l.errorf("unclosed left paren")
 	}
 	r := l.next()
-	if state := lexPunctOrEOF(l, r); state != nil {
+	if state, ok := lexPunctOrEOF(l, r); ok {
 		return state
 	}
-	if state := lexLiteralStart(l, r); state != nil {
+	if state, ok := lexLiteralStart(l, r); ok {
 		return state
 	}
 	return lexCatchAll(l, r)
 }
 
 // lexPunctOrEOF handles EOF and single-rune operators (=, :, |, etc.).
-// Returns nil if r is not one of these.
-func lexPunctOrEOF(l *lexer, r rune) stateFn {
+// Returns (state, true) when r is recognized; the state may be nil if the
+// handler called l.emit (which yields the current item to nextItem) —
+// callers must NOT treat (nil, true) as "did not match." Returns
+// (nil, false) only when r is not one of these characters.
+func lexPunctOrEOF(l *lexer, r rune) (stateFn, bool) {
 	switch r {
 	case eof:
-		return l.errorf("unclosed action")
+		return l.errorf("unclosed action"), true
 	case '=':
-		return l.emit(itemAssign)
+		return l.emit(itemAssign), true
 	case ':':
 		if l.next() != '=' {
-			return l.errorf("expected :=")
+			return l.errorf("expected :="), true
 		}
-		return l.emit(itemDeclare)
+		return l.emit(itemDeclare), true
 	case '|':
-		return l.emit(itemPipe)
+		return l.emit(itemPipe), true
 	case '(':
 		l.parenDepth++
-		return l.emit(itemLeftParen)
+		return l.emit(itemLeftParen), true
 	case ')':
 		l.parenDepth--
 		if l.parenDepth < 0 {
-			return l.errorf("unexpected right paren")
+			return l.errorf("unexpected right paren"), true
 		}
-		return l.emit(itemRightParen)
+		return l.emit(itemRightParen), true
 	}
 	if isSpace(r) {
 		l.backup() // Put space back in case we have " -}}".
-		return lexSpace
+		return lexSpace, true
 	}
-	return nil
+	return nil, false
 }
 
 // lexLiteralStart handles tokens whose first rune signals a literal
-// (string, raw string, char, variable, dot/field, number). Returns nil
-// if r is not one of these starts.
-func lexLiteralStart(l *lexer, r rune) stateFn {
+// (string, raw string, char, variable, dot/field, number). Returns
+// (state, true) when r is recognized; (nil, false) otherwise.
+func lexLiteralStart(l *lexer, r rune) (stateFn, bool) {
 	switch r {
 	case '"':
-		return lexQuote
+		return lexQuote, true
 	case '`':
-		return lexRawQuote
+		return lexRawQuote, true
 	case '$':
-		return lexVariable
+		return lexVariable, true
 	case '\'':
-		return lexChar
+		return lexChar, true
 	case '.':
-		return lexDotOrNumber(l)
+		return lexDotOrNumber(l), true
 	}
 	if r == '+' || r == '-' || ('0' <= r && r <= '9') {
 		l.backup()
-		return lexNumber
+		return lexNumber, true
 	}
-	return nil
+	return nil, false
 }
 
 // lexDotOrNumber resolves '.' as either a field accessor or the start of
