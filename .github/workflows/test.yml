@@ -11,7 +11,7 @@ concurrency:
 env:
   GOPRIVATE: "github.com/StevenACoffman"
   GOFLAGS: "-trimpath"
-  GOLANGCI_LINT_VERSION: latest
+  GOLANGCI_LINT_VERSION: "latest"
 permissions:
   contents: read
 name: Test
@@ -52,7 +52,6 @@ jobs:
         run: go install mvdan.cc/gofumpt@latest
         shell: bash
       - name: Self-format idempotence check
-        if: matrix.platform == 'ubuntu-latest'
         # Running the formatter against its own golden out/ directory
         # must be a no-op: gofumpt-formatted templates are a fixed point.
         run: |
