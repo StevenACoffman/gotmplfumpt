@@ -38,7 +38,7 @@ func TestMain(m *testing.M) {
 
 // TestRunFlags exercises run() directly with injected I/O. Cases share
 // the runOneFlagCase driver; per-case verdicts live in named helpers so
-// the table itself stays simple.
+// the table stays small.
 func TestRunFlags(t *testing.T) {
 	cases := map[string]runFlagCase{
 		"help returns flag.ErrHelp": {

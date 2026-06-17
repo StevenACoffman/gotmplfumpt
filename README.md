@@ -1,19 +1,21 @@
 # Gotmplfumpt - Go Codegen Templates Formatter
 
-This is a formatter for Go templates that emit Go code. It parses the template with the [text/template/parse](https://pkg.go.dev/text/template/parse) grammar (Go 1.20.4, see license below), substitutes each `{{ ... }}` action with a syntactically-valid Go sentinel, runs [gofumpt](https://github.com/mvdan/gofumpt) on the result, and restores the original actions in place — so the output is gofumpt-compliant where the underlying Go is gofumpt-compliant.
+This is a formatter for Go templates that emit Go code. 
+
+It parses the template with the [text/template/parse](https://pkg.go.dev/text/template/parse) grammar (Go 1.20.4, see license below), substitutes each `{{ ... }}` action with a syntactically-valid Go sentinel, runs [gofumpt](https://github.com/mvdan/gofumpt) on the result, and restores the original actions in place — so the output is gofumpt-compliant where the underlying Go is gofumpt-compliant.
 
 - We have no options.
 - We use tabs for indentation (gofumpt does).
 - We support `{{/* gotmplfumpt-ignore-all */}}`, `{{/* gotmplfumpt-ignore-start */}}` and `{{/* gotmplfumpt-ignore-end */}}` to skip regions.
-- `define` blocks are emitted verbatim — their bodies are formatted as separate Go code if they parse standalone.
-- When gofumpt rejects the stubbed Go (e.g., the template emits a fragment rather than a whole file, or splits a Go statement across actions), we fall back to a brace-counting indent pass. Output is still idempotent in that case.
+- We emit `define` blocks verbatim — their bodies pass through as separate Go code when they parse standalone.
+- When gofumpt rejects the stubbed Go (for example, the template emits a fragment rather than a whole file, or splits a Go statement across actions), we fall back to a brace-counting indent pass. Output is still idempotent in that case.
 - We don't auto-add trailing newlines.
-- We care about idempotency: if you find an input that formats differently on a second pass, please report it as a bug.
+- We care about idempotency: if you find an input that formats differently on a second pass, file a bug report.
 
 ## Known Limitations
 
-- Actions that emit half a Go statement (`{{ if .X }}a, b := {{ end }} f()`) hit the fallback path.
-- Actions inside Go string literals are preserved verbatim (gofumpt doesn't reformat string bodies).
+- Actions that emit half a Go statement (`{{ if .X }}a, b := {{ end }} f()`) take the fallback path.
+- The tool preserves verbatim any action inside a Go string literal (gofumpt doesn't reformat string bodies).
 - Templates without a `package` clause render as fragments — the fallback path handles them.
 
 ## Install
@@ -39,11 +41,14 @@ usage: gotmplfumpt [flags] [path ...]
   -version print version information and exit
 ```
 
-Without flags, `gotmplfumpt` prints the formatted output to stdout. When given a directory, it processes all Go-template files recursively. Recognized suffixes: `.tpl.go`, `.go.tpl`, `.gotmpl.go`, `.tmpl.go`, `.go.tmpl`, `.gotmpl`. It also reads from stdin when no paths are given.
+Without flags, `gotmplfumpt` prints the formatted output to stdout. When you point it at a directory, it processes all Go-template files recursively. Recognized suffixes: `.tpl.go`, `.go.tpl`, `.gotmpl.go`, `.tmpl.go`, `.go.tmpl`, `.gotmpl`. It also reads from stdin when you supply no paths.
+
+## Recommended Related Tools
+- [templatecheck](https://github.com/jba/templatecheck)
 
 ### CI
 
-To check that all files are formatted in CI, you can use the `-l` flag:
+To verify that CI keeps every file formatted, use the `-l` flag:
 
 ```text
 gotmplfumpt -l . | grep . && exit 1
@@ -82,19 +87,19 @@ steps:
 
 The motivations for wanting to format codegen `*.gotmpl` template source files are:
 
-- It’s easier for humans to read and maintain a Go template file that is formatted like the Go code it will render out to after code generation. An improvement or bug fix in the concrete rendered output *.go can be easily “backported” to the codegen*.gotmpl template source file
-- Further, Static analysis of rendered *.go files is standard practice, although generated files are often exempted from analysis despite them being just as prone to bugs. I would like to at least have machine assisted tooling that can backport static analysis suggested fixes from those*.go files to their codegen \*.gotmpl template source file.
-- Ideally this could eventually be extended to do syntax aware static analysis on the \*.gotmpl template source files themselves.
+- Humans find it simpler to read and maintain a Go template file that matches the shape of the Go code it renders to after code generation. An improvement or bug fix in the rendered output `*.go` can then be backported to the codegen `*.gotmpl` template source file.
+- Further, static analysis of rendered `*.go` files is standard practice, although generated files are often exempted from analysis despite being as prone to bugs as any other Go. I want at least machine-assisted tooling that can backport static-analysis suggestions from those `*.go` files to their codegen `*.gotmpl` template source file.
+- Ideally this work can extend to syntax-aware static analysis on the `*.gotmpl` template source files themselves.
 
 ## Lineage
 
-This is a fork of [gotmplfmt](https://github.com/gohugoio/gotmplfmt) which was for HTML templates.
-That was a fork of [gotmplfmt](https://github.com/josharian/gotmplfmt).
-That was derived from the `text/template/parse` package in Go standard library 1.20.4
++ This is a fork of [gotmplfmt](https://github.com/gohugoio/gotmplfmt) which was for HTML templates.
++ That was a fork of [gotmplfmt](https://github.com/josharian/gotmplfmt).
++ That was derived from the `text/template/parse` package in Go standard library 1.20.4
 
 ## License
 
-For the license for this code, please see the LICENSE file.
+See the LICENSE file for the license terms.
 
 This code is based on code from the Go standard library. The BSD-ish license for that code is:
 
