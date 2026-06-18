@@ -23,6 +23,7 @@ import (
 //	continuation lines align with the column gofumpt placed the
 //	sentinel at.
 func restore(formatted string, entries map[int]sentinelEntry, prefix string) (string, error) {
+	formatted = tightenAdjacentSentinels(formatted, entries, prefix)
 	out := formatted
 	for id, entry := range entries {
 		needle := sentinelString(id, entry.Kind, prefix)
@@ -37,6 +38,56 @@ func restore(formatted string, entries map[int]sentinelEntry, prefix string) (st
 		out = out[:idx] + replacement + out[idx+len(needle):]
 	}
 	return out, nil
+}
+
+// tightenAdjacentSentinels removes any whitespace gofumpt inserted
+// between two sentinels whose source actions were adjacent (the
+// previous action's "}}" was immediately followed by the next
+// action's "{{" with no whitespace between).
+//
+// gofumpt may add a space, newline, or blank line between consecutive
+// /* */ block comments. Without this pass, two adjacent template
+// actions like "{{ range A }}{{ range B }}" would become
+// "{{- range A }} {{- range B }}" after a round-trip — an unintended
+// whitespace insertion that the original source explicitly avoided.
+func tightenAdjacentSentinels(
+	formatted string,
+	entries map[int]sentinelEntry,
+	prefix string,
+) string {
+	out := formatted
+	for id, entry := range entries {
+		if !entry.PrevAdjacent {
+			continue
+		}
+		prev, ok := entries[id-1]
+		if !ok {
+			continue
+		}
+		prevS := sentinelString(id-1, prev.Kind, prefix)
+		currS := sentinelString(id, entry.Kind, prefix)
+		if prevS == "" || currS == "" {
+			continue
+		}
+		idx := strings.Index(out, prevS)
+		if idx < 0 {
+			continue
+		}
+		afterPrev := idx + len(prevS)
+		j := afterPrev
+		for j < len(out) && isHSpaceOrNewline(out[j]) {
+			j++
+		}
+		if !strings.HasPrefix(out[j:], currS) {
+			continue
+		}
+		out = out[:afterPrev] + out[j:]
+	}
+	return out
+}
+
+func isHSpaceOrNewline(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
 
 // reindentContinuation rewrites the 2..N lines of raw to start at the

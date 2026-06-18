@@ -45,8 +45,9 @@ type sentinelKind int
 // sentinelEntry holds the original raw source for one template action and
 // the kind of sentinel that replaced it in the stub.
 type sentinelEntry struct {
-	Raw  string // exact bytes of the original action including {{…}} and trim markers
-	Kind sentinelKind
+	Raw          string // exact bytes of the original action including {{…}} and trim markers
+	Kind         sentinelKind
+	PrevAdjacent bool // true iff this action's "{{" immediately followed the previous action's "}}" in source
 }
 
 // stubResult is the output of stubGo.
@@ -58,11 +59,12 @@ type stubResult struct {
 
 // stubBuilder accumulates output and the sentinel map during walk.
 type stubBuilder struct {
-	entries map[int]sentinelEntry
-	src     string
-	prefix  string
-	out     strings.Builder
-	nextID  int
+	entries    map[int]sentinelEntry
+	src        string
+	prefix     string
+	out        strings.Builder
+	nextID     int
+	prevEndPos int // byte position just past the previous action's "}}"; -1 means none yet
 }
 
 // stubGo walks the parse AST and emits stub Go source.
@@ -75,9 +77,10 @@ type stubBuilder struct {
 func stubGo(root parse.Node, src string) stubResult {
 	prefix := uniqueSentinelPrefix(src)
 	b := &stubBuilder{
-		src:     src,
-		prefix:  prefix,
-		entries: map[int]sentinelEntry{},
+		src:        src,
+		prefix:     prefix,
+		entries:    map[int]sentinelEntry{},
+		prevEndPos: -1,
 	}
 	b.walk(root)
 	return stubResult{Go: b.out.String(), Entries: b.entries, Prefix: prefix}
@@ -89,9 +92,17 @@ func (b *stubBuilder) nextSentinelID() int {
 	return id
 }
 
-func (b *stubBuilder) recordAction(kind sentinelKind, raw string) int {
+// recordSpan records an action whose source spans src[start:end). It sets
+// PrevAdjacent when start equals the previous action's end position
+// (meaning the two actions had no whitespace between them in source).
+func (b *stubBuilder) recordSpan(kind sentinelKind, start, end int) int {
 	id := b.nextSentinelID()
-	b.entries[id] = sentinelEntry{Kind: kind, Raw: raw}
+	b.entries[id] = sentinelEntry{
+		Kind:         kind,
+		Raw:          b.src[start:end],
+		PrevAdjacent: start == b.prevEndPos,
+	}
+	b.prevEndPos = end
 	return id
 }
 
@@ -128,16 +139,24 @@ func (b *stubBuilder) walk(n parse.Node) {
 	case *parse.TextNode:
 		_, _ = b.out.WriteString(n.Text)
 	case *parse.ActionNode:
-		raw := actionSource(n, b.src)
-		id := b.recordAction(kindAction, raw)
-		b.emit(id, kindAction)
+		b.emitActionSpan(int(n.Position()), kindAction)
 	case *parse.CommentNode:
-		raw := actionSource(n, b.src)
-		id := b.recordAction(kindTemplateComment, raw)
-		b.emit(id, kindTemplateComment)
+		b.emitActionSpan(int(n.Position()), kindTemplateComment)
 	case *parse.BranchNode:
 		b.walkBranch(n)
 	}
+}
+
+// emitActionSpan records and emits one action whose interior position is
+// pos. Falls back to a degraded record (no span info) if the action's
+// delimiters can't be located.
+func (b *stubBuilder) emitActionSpan(pos int, kind sentinelKind) {
+	start, end, ok := actionSpan(pos, b.src)
+	if !ok {
+		return
+	}
+	id := b.recordSpan(kind, start, end)
+	b.emit(id, kind)
 }
 
 func (b *stubBuilder) walkBranch(n *parse.BranchNode) {
@@ -146,51 +165,44 @@ func (b *stubBuilder) walkBranch(n *parse.BranchNode) {
 	// Pass the whole block through as one opaque sentinel so gofumpt
 	// never sees the body. The body is restored byte-for-byte.
 	if n.Keyword == "define" && n.End != nil {
-		if raw := wholeBranchSource(n, b.src); raw != "" {
-			id := b.recordAction(kindDefineBlock, raw)
+		if start, end, ok := defineSpan(n, b.src); ok {
+			id := b.recordSpan(kindDefineBlock, start, end)
 			b.emit(id, kindDefineBlock)
 			return
 		}
 	}
-	// Open delimiter: capture exact bytes of {{ if/range/with … }}.
-	openRaw := actionSourceAtPos(int(n.Position()), b.src)
-	openID := b.recordAction(kindBranchOpen, openRaw)
-	b.emit(openID, kindBranchOpen)
+	b.emitActionSpan(int(n.Position()), kindBranchOpen)
 	b.walk(n.List)
 	for _, e := range n.Elses {
-		midRaw := actionSourceAtPos(int(e.Position()), b.src)
-		midID := b.recordAction(kindBranchMid, midRaw)
-		b.emit(midID, kindBranchMid)
+		b.emitActionSpan(int(e.Position()), kindBranchMid)
 		b.walk(e.List)
 	}
 	if n.End != nil {
-		closeRaw := actionSourceAtPos(int(n.End.Position()), b.src)
-		closeID := b.recordAction(kindBranchClose, closeRaw)
-		b.emit(closeID, kindBranchClose)
+		b.emitActionSpan(int(n.End.Position()), kindBranchClose)
 	}
 }
 
-// wholeBranchSource returns the raw source bytes covering a branch from
-// its opening "{{" through the matching "{{end}}". Returns the empty
-// string if either delimiter can't be located.
-func wholeBranchSource(n *parse.BranchNode, src string) string {
+// defineSpan returns the byte range [start, end) covering a {{define}}
+// branch from its opening "{{" through its matching "{{end}}"'s "}}".
+// Returns ok=false if either delimiter can't be located.
+func defineSpan(n *parse.BranchNode, src string) (start, end int, ok bool) {
 	openPos := int(n.Position())
 	if openPos <= 0 || openPos > len(src) {
-		return ""
+		return 0, 0, false
 	}
-	start := strings.LastIndex(src[:openPos], "{{")
-	if start < 0 {
-		return ""
+	s := strings.LastIndex(src[:openPos], "{{")
+	if s < 0 {
+		return 0, 0, false
 	}
 	endPos := int(n.End.Position())
 	if endPos < 0 || endPos > len(src) {
-		return ""
+		return 0, 0, false
 	}
 	closeIdx := strings.Index(src[endPos:], "}}")
 	if closeIdx < 0 {
-		return ""
+		return 0, 0, false
 	}
-	return src[start : endPos+closeIdx+2]
+	return s, endPos + closeIdx + 2, true
 }
 
 // uniqueSentinelPrefix returns an identifier prefix that does not appear
@@ -218,26 +230,20 @@ func uniqueSentinelPrefix(src string) string {
 	return cand
 }
 
-// actionSource returns the raw source bytes of the action node n,
-// including the enclosing {{…}} and any trim markers.
-func actionSource(n parse.Node, src string) string {
-	return actionSourceAtPos(int(n.Position()), src)
-}
-
-// actionSourceAtPos walks back from pos (which is interior to an action)
-// to the preceding "{{" and forward to the next "}}", and returns the
-// slice. Returns the empty string on failure.
-func actionSourceAtPos(pos int, src string) string {
+// actionSpan returns the byte range [start, end) of the {{…}} action
+// whose interior position is pos in src. Returns ok=false when the
+// delimiters can't be located.
+func actionSpan(pos int, src string) (start, end int, ok bool) {
 	if pos <= 0 || pos > len(src) {
-		return ""
+		return 0, 0, false
 	}
-	start := strings.LastIndex(src[:pos], "{{")
-	if start < 0 {
-		return ""
+	s := strings.LastIndex(src[:pos], "{{")
+	if s < 0 {
+		return 0, 0, false
 	}
-	end := strings.Index(src[start:], "}}")
-	if end < 0 {
-		return ""
+	j := strings.Index(src[s:], "}}")
+	if j < 0 {
+		return 0, 0, false
 	}
-	return src[start : start+end+2]
+	return s, s + j + 2, true
 }

@@ -43,6 +43,48 @@ usage: gotmplfumpt [flags] [path ...]
 
 Without flags, `gotmplfumpt` prints the formatted output to stdout. When you point it at a directory, it processes all Go-template files recursively. Recognized suffixes: `.tpl.go`, `.go.tpl`, `.gotmpl.go`, `.tmpl.go`, `.go.tmpl`, `.gotmpl`. It also reads from stdin when you supply no paths.
 
+## Producing gofumpt-clean output
+
+`gotmplfumpt` formats the **template source**. The **rendered Go** is only as gofumpt-clean as the template makes it. The two common holdouts are alignment cases — consecutive `const` items and struct-literal keys — because gofumpt right-pads the shorter name in a group to align columns, and a template that emits one item per iteration can't pre-compute the max width without help.
+
+The `tmplfunc` subpackage offers a `padRight` helper for exactly this. Install it once in your codegen's `FuncMap`:
+
+```go
+import (
+	"text/template"
+
+	"github.com/StevenACoffman/gotmplfumpt/tmplfunc"
+)
+
+t := template.New("").Funcs(tmplfunc.FuncMap()).Parse(src)
+```
+
+Then in the template, compute the max width in a first pass and pad in the second:
+
+```text
+{{- $max := 0 -}}
+{{- range .Items -}}
+  {{- if gt (len .Name) $max }}{{ $max = len .Name }}{{ end -}}
+{{- end -}}
+const (
+{{- range .Items }}
+	{{ padRight .Name $max }} = "{{ .Value }}"
+{{- end }}
+)
+```
+
+Renders to:
+
+```go
+const (
+	Alpha    = "1"
+	BetaLong = "2"
+	C        = "3"
+)
+```
+
+gofumpt sees this as a fixed point and makes no changes.
+
 ## Recommended Related Tools
 - [templatecheck](https://github.com/jba/templatecheck)
 

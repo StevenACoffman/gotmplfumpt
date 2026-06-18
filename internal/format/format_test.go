@@ -112,11 +112,13 @@ func tryParseGoTextTemplate(t *testing.T, text string) {
 	t.Helper()
 	fn := func() string { return "" }
 	funcMap := template.FuncMap{
-		"append":  fn,
-		"default": fn,
-		"dict":    fn,
-		"first":   fn,
-		"where":   fn,
+		"append":       fn,
+		"default":      fn,
+		"dict":         fn,
+		"first":        fn,
+		"snakeToCamel": fn,
+		"title":        fn,
+		"where":        fn,
 	}
 	if _, err := template.New("").Funcs(funcMap).Parse(text); err != nil {
 		t.Fatal("Error parsing template:", err)

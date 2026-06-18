@@ -65,3 +65,66 @@ func TestReindentContinuation(t *testing.T) {
 		})
 	}
 }
+
+// TestTightenAdjacentSentinels exercises the post-gofumpt pass that
+// removes whitespace gofumpt inserted between two sentinels whose source
+// actions sat back-to-back. Each case lists the formatted Go that
+// gofumpt produced (with sentinels intact) and the desired tightened
+// form before restore swaps actions back in.
+func TestTightenAdjacentSentinels(t *testing.T) {
+	const prefix = "__gtmpl"
+	cases := map[string]struct {
+		formatted string
+		entries   map[int]sentinelEntry
+		want      string
+	}{
+		"space between two adjacent branch opens": {
+			formatted: "/*GTMPL_OPEN_0*/ /*GTMPL_OPEN_1*/\n",
+			entries: map[int]sentinelEntry{
+				0: {Kind: kindBranchOpen, PrevAdjacent: false},
+				1: {Kind: kindBranchOpen, PrevAdjacent: true},
+			},
+			want: "/*GTMPL_OPEN_0*//*GTMPL_OPEN_1*/\n",
+		},
+		"newline between two adjacent branch closes": {
+			formatted: "/*GTMPL_CLOSE_0*/\n/*GTMPL_CLOSE_1*/\n",
+			entries: map[int]sentinelEntry{
+				0: {Kind: kindBranchClose, PrevAdjacent: false},
+				1: {Kind: kindBranchClose, PrevAdjacent: true},
+			},
+			want: "/*GTMPL_CLOSE_0*//*GTMPL_CLOSE_1*/\n",
+		},
+		"non-adjacent pair untouched": {
+			formatted: "/*GTMPL_OPEN_0*/ /*GTMPL_OPEN_1*/\n",
+			entries: map[int]sentinelEntry{
+				0: {Kind: kindBranchOpen, PrevAdjacent: false},
+				1: {Kind: kindBranchOpen, PrevAdjacent: false},
+			},
+			want: "/*GTMPL_OPEN_0*/ /*GTMPL_OPEN_1*/\n",
+		},
+		"action identifier adjacent to branch open": {
+			formatted: "__gtmpl_0 /*GTMPL_OPEN_1*/\n",
+			entries: map[int]sentinelEntry{
+				0: {Kind: kindAction, PrevAdjacent: false},
+				1: {Kind: kindBranchOpen, PrevAdjacent: true},
+			},
+			want: "__gtmpl_0/*GTMPL_OPEN_1*/\n",
+		},
+		"no inserted whitespace stays put": {
+			formatted: "/*GTMPL_OPEN_0*//*GTMPL_OPEN_1*/\n",
+			entries: map[int]sentinelEntry{
+				0: {Kind: kindBranchOpen, PrevAdjacent: false},
+				1: {Kind: kindBranchOpen, PrevAdjacent: true},
+			},
+			want: "/*GTMPL_OPEN_0*//*GTMPL_OPEN_1*/\n",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := tightenAdjacentSentinels(tc.formatted, tc.entries, prefix)
+			if got != tc.want {
+				t.Errorf("tightenAdjacentSentinels: got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

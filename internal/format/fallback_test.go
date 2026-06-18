@@ -50,6 +50,26 @@ func TestReindentByDepth(t *testing.T) {
 			in:   "func F() {\nr := '{'\nreturn\n}\n",
 			want: "func F() {\n\tr := '{'\n\treturn\n}\n",
 		},
+		"single-line template comment": {
+			in:   "{{/* one-liner */}}\nreturn\n",
+			want: "{{/* one-liner */}}\nreturn\n",
+		},
+		"multi-line template comment preserved": {
+			in:   "{{/* line1\n     line2 */}}\nreturn\n",
+			want: "{{/* line1\n     line2 */}}\nreturn\n",
+		},
+		"template comment in func body": {
+			in:   "func F() {\n{{/* note */}}\nreturn\n}\n",
+			want: "func F() {\n\t{{/* note */}}\n\treturn\n}\n",
+		},
+		"trim-marked template comment": {
+			in:   "{{- /* trimmed\nbody */ -}}\nx\n",
+			want: "{{- /* trimmed\nbody */ -}}\nx\n",
+		},
+		"template comment with braces inside ignored": {
+			in:   "func F() {\n{{/* foo { bar } baz */}}\nreturn\n}\n",
+			want: "func F() {\n\t{{/* foo { bar } baz */}}\n\treturn\n}\n",
+		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

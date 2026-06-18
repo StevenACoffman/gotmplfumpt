@@ -23,27 +23,30 @@ import (
 )
 
 // depthScanner tracks lexer state that persists across lines (block
-// comments, raw strings, define blocks) plus the running depth.
+// comments, raw strings, template comments, define blocks) plus the
+// running depth.
 type depthScanner struct {
-	depth          int
-	defineDepth    int
-	inBlockComment bool
-	inRawString    bool
+	depth             int
+	defineDepth       int
+	inBlockComment    bool
+	inRawString       bool
+	inTemplateComment bool
 }
 
 // lineWalker scans one line, tracking whether the cursor is inside a Go
-// string/rune/comment/raw-string or a template action/define, and
-// emitting brace deltas via step().
+// string/rune/comment/raw-string, a template comment, or a template
+// action/define, and emitting brace deltas via step().
 type lineWalker struct {
-	line           string
-	pos            int
-	defineDepth    int
-	inDoubleString bool
-	inRune         bool
-	inLineComment  bool
-	inBlockComment bool
-	inRawString    bool
-	inAction       bool // inside {{ ... }}
+	line              string
+	pos               int
+	defineDepth       int
+	inDoubleString    bool
+	inRune            bool
+	inLineComment     bool
+	inBlockComment    bool
+	inRawString       bool
+	inTemplateComment bool // inside {{/* ... */}}, including across lines
+	inAction          bool // inside {{ ... }}
 }
 
 // fallbackFormat produces an idempotent format without gofumpt. Used
@@ -61,18 +64,22 @@ func fallbackFormat(root parse.Node) string {
 // reindentByDepth strips each line's leading whitespace and reapplies a
 // tab indent equal to the combined Go-brace + template-branch depth at
 // that line. Lines that are empty after stripping stay empty. Lines
-// inside a {{ define }} block are emitted verbatim — define bodies
-// declare a separate template namespace and may be Go fragments whose
-// brace nesting shouldn't influence the parent file's indent.
+// inside a {{ define }} block, or inside a multi-line {{/* … */}}
+// template comment, are emitted verbatim — both declare content whose
+// indentation is deliberate and shouldn't be reflowed by the brace
+// counter.
 func reindentByDepth(s string) string {
 	lines := strings.Split(s, "\n")
 	scanner := newDepthScanner()
 	out := make([]string, 0, len(lines))
 	for _, raw := range lines {
 		insideDefineAtStart := scanner.defineDepth > 0
+		insideTemplateCommentAtStart := scanner.inTemplateComment
 		pre, post := scanner.deltaForLine(strings.TrimLeft(raw, " \t"))
 		insideDefineAtEnd := scanner.defineDepth > 0
-		if insideDefineAtStart || insideDefineAtEnd {
+		insideTemplateCommentAtEnd := scanner.inTemplateComment
+		if insideDefineAtStart || insideDefineAtEnd ||
+			insideTemplateCommentAtStart || insideTemplateCommentAtEnd {
 			out = append(out, raw)
 			continue
 		}
@@ -109,10 +116,11 @@ func newDepthScanner() *depthScanner { return &depthScanner{} }
 func (s *depthScanner) deltaForLine(line string) (pre, post int) {
 	leadingZone := true
 	walker := lineWalker{
-		line:           line,
-		inBlockComment: s.inBlockComment,
-		inRawString:    s.inRawString,
-		defineDepth:    s.defineDepth,
+		line:              line,
+		inBlockComment:    s.inBlockComment,
+		inRawString:       s.inRawString,
+		inTemplateComment: s.inTemplateComment,
+		defineDepth:       s.defineDepth,
 	}
 	for walker.pos < len(walker.line) {
 		change, isOpenLike := walker.step()
@@ -131,6 +139,7 @@ func (s *depthScanner) deltaForLine(line string) (pre, post int) {
 	}
 	s.inBlockComment = walker.inBlockComment
 	s.inRawString = walker.inRawString
+	s.inTemplateComment = walker.inTemplateComment
 	s.defineDepth = walker.defineDepth
 	return pre, post
 }
@@ -142,6 +151,8 @@ func (s *depthScanner) deltaForLine(line string) (pre, post int) {
 // the leading-close zone in deltaForLine).
 func (w *lineWalker) step() (int, bool) {
 	switch {
+	case w.inTemplateComment:
+		return w.consumeTemplateCommentSegment()
 	case w.inBlockComment:
 		return w.consumeBlockCommentSegment()
 	case w.inRawString:
@@ -227,15 +238,46 @@ func (w *lineWalker) consumeGoSubstate(r byte) bool {
 
 // openTemplateAction is called at a "{{" prefix; it classifies the
 // action's keyword (if any) and consumes through the matching "}}",
-// returning the brace delta to apply for the action as a whole.
+// returning the brace delta to apply for the action as a whole. A
+// "{{/* … */}}" template comment is recognized here (after any trim
+// marker) and dispatched to the cross-line template-comment state.
 func (w *lineWalker) openTemplateAction() (int, bool) {
 	w.pos += 2
 	for w.pos < len(w.line) && (w.line[w.pos] == '-' || w.line[w.pos] == ' ' || w.line[w.pos] == '\t') {
 		w.pos++
 	}
+	if w.peekIs("/*") {
+		w.pos += 2
+		w.inTemplateComment = true
+		return 0, false
+	}
 	delta, openLike := w.classifyActionKeyword()
 	w.inAction = true
 	return delta, openLike
+}
+
+// consumeTemplateCommentSegment consumes input until the closing "*/}}"
+// (optionally with right-trim marker "*/ -}}"). If the close isn't on
+// this line, the cross-line inTemplateComment state stays set so the
+// caller emits subsequent lines verbatim.
+func (w *lineWalker) consumeTemplateCommentSegment() (int, bool) {
+	idx := strings.Index(w.line[w.pos:], "*/")
+	if idx < 0 {
+		w.pos = len(w.line)
+		return 0, false
+	}
+	// Advance past "*/" then skip any trim marker and the closing "}}".
+	w.pos += idx + 2
+	for w.pos < len(w.line) && (w.line[w.pos] == '-' || w.line[w.pos] == ' ' || w.line[w.pos] == '\t') {
+		w.pos++
+	}
+	if w.peekIs("}}") {
+		w.pos += 2
+		w.inTemplateComment = false
+		return 0, false
+	}
+	// "*/" was inside the comment body, not the closer. Keep scanning.
+	return w.consumeTemplateCommentSegment()
 }
 
 // classifyActionKeyword peeks at the action's first word and returns
