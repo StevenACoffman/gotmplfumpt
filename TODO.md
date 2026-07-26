@@ -85,21 +85,20 @@ Instead, do more of the work *around* gofumpt and hand it better stubs.
 
 ## Simplification
 
-- [ ] **Downgrade or drop the reparse + `shapesEqual` verify.** _(discovered)_
-      With the tiling's structure-preservation property proven (golden + fuzz),
-      `formatViaGofumpt`'s full reparse is largely redundant. Consider replacing
-      it with an O(n) assertion that every sentinel appears exactly once in
-      order, or dropping it. Currently kept as defense-in-depth against gofumpt
-      doing something unexpected. Location: `internal/format/verify.go`,
-      `internal/format/format.go`.
+- [x] **Downgrade the reparse + `shapesEqual` verify.** _(done)_ Replaced the
+      full `parse.Parse(out)` + shape compare with `Tiling.VerifyFormatted`: an
+      O(n·k) scan asserting every sentinel occurs exactly once and in order.
+      Deleted `internal/format/verify.go`/`verify_test.go`. Bonus correctness —
+      it also catches same-kind reorders that the shape compare missed. Golden
+      output unchanged.
 
 ## Enhancements
 
-- [ ] **`BlockIdx`/`Block` field on `RawSlice`.** _(design)_ Formalize which
-      template block owns each slice (SQLFluff `block_idx`, base.py:83). Enables
-      a verify step to assert gofumpt never reordered a sentinel across a block
-      boundary — a safety property, not cosmetic. Optional. Location:
-      `internal/tiling/tiling.go`, `internal/tiling/scan.go`.
+- [x] **`Block` field on `RawSlice`.** _(done)_ Added a monotonic block-region
+      id (SQLFluff `block_idx` analog), computed in `ScanTiling` and incremented
+      at each BlockOpen/BlockClose. `VerifyFormatted` uses it to report whether a
+      displaced sentinel crossed a block boundary; it is also groundwork for
+      future block-aware rules. `internal/tiling/{tiling,scan,verify}.go`.
 
 ## Project direction (from README "Why?")
 
