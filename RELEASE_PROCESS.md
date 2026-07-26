@@ -134,6 +134,6 @@ ______________________________________________________________________
 
    - Go to the repository on GitHub → **Settings** → **Environments** → **New environment**.
    - Name it `pypi`.
-   - Optionally add a required reviewer or deployment branch rule (e.g., restrict to tags matching `v*`) for additional protection.
+   - Optionally add a required reviewer or deployment branch rule (for example, restrict to tags matching `v*`) for extra protection.
 
 Once both sides are configured, pushing a new tag and running the **Build and Publish** workflow (which creates the GitHub release) will automatically trigger `postrelease.yaml`, build the wheels, and publish them to PyPI without any secrets.

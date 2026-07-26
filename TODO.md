@@ -4,7 +4,7 @@ Outstanding work, most actionable first. Items marked _(discovered)_ surfaced
 while replacing the stub/restore heuristics with the `internal/tiling` source
 model; items marked _(design)_ come from the SQLFluff source-map comparison.
 
-## Architecture — finish routing everything through the tiling
+## Architecture — Finish Routing Everything Through the Tiling
 
 The tiling replaced the heuristics on the **gofumpt path** first. Item A then
 routed the fallback through the tiling too, so both paths now share one scan.
@@ -28,36 +28,44 @@ dead outside `parse`'s own tests.
       now format via the tiling, not the printer). This collapses the last
       duplicate `{{…}}` scanner outside the `parse/lex.go` lexer.
 
-## Formatter strategy — reduce fallbacks, feed gofumpt richer Go
+## Formatter Strategy — Reduce Fallbacks, Feed Gofumpt Richer Go
 
 Keep gofumpt as the Go-layout oracle (the tool's contract chains its output to
 gofumpt's byte-for-byte, so replacing gofumpt would mean cloning it exactly).
-Instead, do more of the work *around* gofumpt and hand it better stubs.
+Instead, do more of the work _around_ gofumpt and hand it better stubs.
 
 - [x] **Format opaque `define` bodies via gofumpt-on-a-wrapped fragment.**
       _(done)_ `internal/format/define.go` reflows each PURE-GO define body
       (a whole file directly, a package-less declaration list wrapped in a
       synthetic `package` and unwrapped) before the main pipeline. Bodies
       containing a template action (`{{…}}`) are refused, so their delimiters
-      are never reflowed — this leaves template-fragment defines (e.g.
+      are never reflowed — this leaves template-fragment defines (for example
       eventgen) untouched. define-block's golden now shows cleaned-up bodies;
       all others unchanged; idempotent.
 
-- [ ] **Context-sensitive stubbing: map control tags to real Go blocks.**
-      _(design)_ Highest-upside experiment. Today `{{if}}` becomes an inert
-      `/* comment */`, chosen so template nesting need not match Go brace
-      nesting — but then gofumpt never sees the block as an indent scope, which
-      forces the reindent hacks and many fallbacks. In **statement context**,
-      stub `{{if .X}}…{{end}}` as `if true {…}` and `{{range}}` as
-      `for range x {…}` — real Go blocks gofumpt indents natively — then restore
-      the delimiters. This is "make the process aware of both languages" done by
-      feeding gofumpt richer Go rather than replacing it. Risk: detecting
-      statement vs. expression vs. top-level context is itself non-trivial and is
-      where a new edge-case tail could grow; gate it behind the context the
-      tiling can determine reliably, and fall back to comment sentinels
-      otherwise. Location: `internal/tiling/sentinel.go`, `scan.go`.
+- [x] **Context-sensitive stubbing: map control tags to real Go blocks.**
+      _(won't do)_ The idea was to stub `{{if .X}}…{{end}}` as `if true {…}` in
+      statement context so gofumpt indents the body natively. Investigation
+      showed this **contradicts the tool's match-render goal**: a `{{if}}`
+      renders to no Go braces, so its body belongs at the surrounding Go level —
+      exactly what the current comment-sentinel approach already produces. The
+      `if-else` fixture confirms it: `return 1` sits at one tab, matching the
+      rendered `func F() int { return 1 }`. `if true {` scaffolding would indent
+      the body a second level, introducing a phantom brace level absent from the
+      render. The comment-sentinel design is correct and intentional, not a
+      limitation. See the design principle below.
 
-## Correctness follow-ups
+## Design Principles
+
+- **Control-tag actions are indentation-invisible (match the render).**
+  `{{if}}`/`{{range}}`/`{{with}}`/`{{else}}`/`{{end}}` produce no Go braces when
+  rendered, so gotmplfumpt does not indent their bodies as if they did. Block
+  tags stub to comments (not `if true {`), and indentation follows only the
+  literal Go braces — so the template matches the shape of the Go it renders to.
+  (Define bodies are the deliberate exception: they have no single render shape,
+  being invoked elsewhere, so they are indented by their own structure.)
+
+## Correctness Follow-Ups
 
 - [x] **Reindent corrupts a balanced multi-line raw string inside an action.**
       _(done)_ Replaced the odd-backtick-count guard with `stringLineMask`, a
@@ -69,19 +77,20 @@ Instead, do more of the work *around* gofumpt and hand it better stubs.
       `internal/tiling/testdata/fuzz`. `internal/tiling/reindent.go`.
 
 - [x] **Reindented template-fragment `define` bodies — resolved.** _(done)_
-      Two layers: (B) `Restore` now skips reindent for `Define` slices, so an
-      opaque body is never flattened to the sentinel column (also fixes a latent
-      bug where that would undo the pre-pass's gofumpt formatting of a pure-Go
-      body); (C) the pre-pass then structurally re-indents template-fragment
-      bodies via `tilingIndent` (with an `{{else}}` dedent fix so `{{if/else/end}}`
-      align), degrading to verbatim (B) if the fragment does not tile. eventgen
-      goldens now show Go bodies indented by depth with control tags at column 0.
+      Two layers. First, `Restore` now skips reindent for `Define` slices, so an
+      opaque body is never flattened to the sentinel column (this also fixes a
+      latent bug where that would undo the pre-pass's gofumpt formatting of a
+      pure-Go body). Second, the pre-pass then structurally re-indents
+      template-fragment bodies via `tilingIndent` (with an `{{else}}` dedent fix
+      so `{{if/else/end}}` align), degrading to verbatim if the fragment does not
+      tile. The eventgen goldens now show Go bodies indented by depth with
+      control tags at column 0.
 
 - [x] **Lock in the trim-marker whitespace behavior with a fixture.** _(done)_
       Added `trim-marker-whitespace.tpl.go` (a fallback-path fragment where the
       preservation is not masked by gofumpt reindentation): the two spaces
       before `{{- .Tag }}`, which the old `TextNode`-based stub trimmed, survive
-      to the output and the golden's idempotency/reparse gates pass.
+      to the output, and the golden test's idempotency and reparse gates pass.
 
 ## Simplification
 
@@ -97,10 +106,10 @@ Instead, do more of the work *around* gofumpt and hand it better stubs.
 - [x] **`Block` field on `RawSlice`.** _(done)_ Added a monotonic block-region
       id (SQLFluff `block_idx` analog), computed in `ScanTiling` and incremented
       at each BlockOpen/BlockClose. `VerifyFormatted` uses it to report whether a
-      displaced sentinel crossed a block boundary; it is also groundwork for
+      displaced sentinel crossed a block boundary, and is groundwork for
       future block-aware rules. `internal/tiling/{tiling,scan,verify}.go`.
 
-## Project direction (from README "Why?")
+## Project Direction (From README "Why?")
 
 - [ ] **Syntax-aware static analysis on `.gotmpl` source directly.** The tiling's
       typed slices are a foundation for linting template source without
@@ -112,7 +121,7 @@ Instead, do more of the work *around* gofumpt and hand it better stubs.
       only if this becomes a goal; see `scratchpad/` design notes for why the
       render→backport approach is a poor fit for a data-less formatter.
 
-## Done (this effort)
+## Done (This Effort)
 
 - [x] Gap-free typed source tiling with an asserted invariant (`Check`,
       SQLFluff base.py:195-207).

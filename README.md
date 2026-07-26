@@ -1,14 +1,15 @@
 # Gotmplfumpt - Go Codegen Templates Formatter
 
-This is a formatter for Go templates that emit Go code. 
+This is a formatter for Go templates that emit Go code.
 
-It parses the template with the [text/template/parse](https://pkg.go.dev/text/template/parse) grammar (Go 1.20.4, see license below), substitutes each `{{ ... }}` action with a syntactically-valid Go sentinel, runs [gofumpt](https://github.com/mvdan/gofumpt) on the result, and restores the original actions in place — so the output is gofumpt-compliant where the underlying Go is gofumpt-compliant.
+It parses the template with the [text/template/parse](https://pkg.go.dev/text/template/parse) grammar (Go 1.20.4, see license below), partitions the source into a gap-free set of typed slices, replaces each `{{ ... }}` action with a syntactically-valid Go sentinel (an identifier for value actions, a comment for control tags such as `{{if}}`/`{{end}}`), runs [gofumpt](https://github.com/mvdan/gofumpt) on the result, verifies that gofumpt left every sentinel intact and in order, and restores the original actions in place — so the output is gofumpt-compliant where the underlying Go is gofumpt-compliant.
 
 - We have no options.
 - We use tabs for indentation (gofumpt does).
 - We support `{{/* gotmplfumpt-ignore-all */}}`, `{{/* gotmplfumpt-ignore-start */}}` and `{{/* gotmplfumpt-ignore-end */}}` to skip regions.
-- We emit `define` blocks verbatim — their bodies pass through as separate Go code when they parse standalone.
-- When gofumpt rejects the stubbed Go (for example, the template emits a fragment rather than a whole file, or splits a Go statement across actions), we fall back to a brace-counting indent pass. Output is still idempotent in that case.
+- Control tags (`{{if}}`, `{{range}}`, `{{with}}`, `{{else}}`, `{{end}}`) don't add indentation: they render to no Go braces, so their bodies stay at the surrounding Go level, and the template matches the shape of the Go it renders to.
+- We format `define` block bodies: a body that is standalone Go is reformatted by gofumpt (wrapped in a synthetic package first if it lacks one); a body that contains template actions is indented by its own structure.
+- When gofumpt rejects the stubbed Go (for example, the template emits a fragment rather than a whole file, or splits a Go statement across actions), we fall back to a brace-depth indent pass driven by the same source model. Output is still idempotent in that case.
 - We don't auto-add trailing newlines.
 - We care about idempotency: if you find an input that formats differently on a second pass, file a bug report.
 
@@ -43,7 +44,7 @@ usage: gotmplfumpt [flags] [path ...]
 
 Without flags, `gotmplfumpt` prints the formatted output to stdout. When you point it at a directory, it processes all Go-template files recursively. Recognized suffixes: `.tpl.go`, `.go.tpl`, `.gotmpl.go`, `.tmpl.go`, `.go.tmpl`, `.gotmpl`. It also reads from stdin when you supply no paths.
 
-## Producing gofumpt-clean output
+## Producing Gofumpt-Clean Output
 
 `gotmplfumpt` formats the **template source**. The **rendered Go** is only as gofumpt-clean as the template makes it. The two common holdouts are alignment cases — consecutive `const` items and struct-literal keys — because gofumpt right-pads the shorter name in a group to align columns, and a template that emits one item per iteration can't pre-compute the max width without help.
 
@@ -86,6 +87,7 @@ const (
 gofumpt sees this as a fixed point and makes no changes.
 
 ## Recommended Related Tools
+
 - [templatecheck](https://github.com/jba/templatecheck)
 
 ### CI
@@ -135,9 +137,9 @@ The motivations for wanting to format codegen `*.gotmpl` template source files a
 
 ## Lineage
 
-+ This is a fork of [gotmplfmt](https://github.com/gohugoio/gotmplfmt) which was for HTML templates.
-+ That was a fork of [gotmplfmt](https://github.com/josharian/gotmplfmt).
-+ That was derived from the `text/template/parse` package in Go standard library 1.20.4
+- This is a fork of [gotmplfmt](https://github.com/gohugoio/gotmplfmt) which was for HTML templates.
+- That was a fork of [gotmplfmt](https://github.com/josharian/gotmplfmt).
+- That was derived from the `text/template/parse` package in Go standard library 1.20.4
 
 ## License
 
