@@ -1,10 +1,10 @@
 {{ define "header" }}
-package    main
+package main
 
-func    F()    {}
+func F() {}
 {{ end }}
 
 {{ define "footer" }}
-//   trailing      definitions
-func    G()  {}
+// trailing      definitions
+func G() {}
 {{ end }}

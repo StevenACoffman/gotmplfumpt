@@ -31,6 +31,16 @@ func Format(text string) (string, error) {
 		return text, nil
 	}
 
+	// Format opaque {{define}} bodies before the main pipeline, which treats
+	// them as verbatim. Re-parse only when a body was reflowed.
+	if formatted := formatDefineBodies(text); formatted != text {
+		text = formatted
+		root, err = parse.Parse(text)
+		if err != nil {
+			return "", fmt.Errorf("parse template: %w", err)
+		}
+	}
+
 	// Build the tiling once and share it with both paths. A template that
 	// parse.Parse accepted always tiles (both require balanced, terminated
 	// delimiters), so this error is a should-not-happen invariant violation;
