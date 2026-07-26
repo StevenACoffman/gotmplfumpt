@@ -29,3 +29,31 @@ func TestRestoreLeavesInlineActionUnchanged(t *testing.T) {
 		t.Errorf("inline action changed = %q, want identity %q", got, src)
 	}
 }
+
+// TestRestoreDoesNotCorruptRawString checks that a continuation line beginning
+// inside a Go raw string is left verbatim: reindenting it would insert a tab
+// into the string's value. The action sits on its own indented line, so the
+// reindent guard would otherwise fire.
+func TestRestoreDoesNotCorruptRawString(t *testing.T) {
+	t.Parallel()
+	const src = "\t{{ printf `a\nb` }}\n"
+	got := roundTrip(t, src, func(stub string) string { return stub })
+	if got != src {
+		t.Errorf("raw string corrupted = %q, want identity %q", got, src)
+	}
+}
+
+// TestRestoreReindentsCodeButNotRawString checks the mixed case: a continuation
+// line in code context is reindented, while a later line inside a raw string is
+// not.
+func TestRestoreReindentsCodeButNotRawString(t *testing.T) {
+	t.Parallel()
+	// Line 2 (dict continuation "s") is code → reindented; line 3 begins inside
+	// the raw string → left verbatim.
+	const src = "\t{{ dict\n\"k\" `a\nb` }}\n"
+	got := roundTrip(t, src, func(stub string) string { return stub })
+	const want = "\t{{ dict\n\t\"k\" `a\nb` }}\n"
+	if got != want {
+		t.Errorf("mixed reindent = %q, want %q", got, want)
+	}
+}

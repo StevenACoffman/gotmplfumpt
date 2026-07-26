@@ -13,17 +13,22 @@ import "strings"
 // reindentContinuation rewrites lines 2..N of raw to start at the same column
 // as the sentinel at sentinelIdx in formatted. Line 1 is unchanged; it already
 // sits at the sentinel's column by construction. When the sentinel's line has
-// non-whitespace before it (the action is inline, not on its own line) or when
-// raw contains an unbalanced backtick (a raw-string literal spans lines and
-// re-indenting would corrupt it), raw is returned unchanged.
+// non-whitespace before it (the action is inline, not on its own line), raw is
+// returned unchanged. A continuation line that begins inside a Go raw-string
+// literal is left verbatim — its leading whitespace is string content, not
+// indentation, so rewriting it would change the string's value.
 func reindentContinuation(formatted string, sentinelIdx int, raw string) string {
 	lineStart := strings.LastIndexByte(formatted[:sentinelIdx], '\n') + 1
 	prefix := formatted[lineStart:sentinelIdx]
-	if !isAllSpaceOrTab(prefix) || hasUnclosedBacktick(raw) {
+	if !isAllSpaceOrTab(prefix) {
 		return raw
 	}
 	lines := strings.Split(raw, "\n")
+	insideString := stringLineMask(raw)
 	for i := 1; i < len(lines); i++ {
+		if insideString[i] {
+			continue
+		}
 		lines[i] = prefix + strings.TrimLeft(lines[i], " \t")
 	}
 	return strings.Join(lines, "\n")
@@ -39,8 +44,49 @@ func isAllSpaceOrTab(s string) bool {
 	return true
 }
 
-// hasUnclosedBacktick reports whether s contains an odd number of backticks,
-// implying a raw-string literal spans lines and re-indenting would corrupt it.
-func hasUnclosedBacktick(s string) bool {
-	return strings.Count(s, "`")%2 != 0
+// stringLineMask reports, for each line of raw (split on "\n"), whether that
+// line begins inside a Go string, raw-string, or char literal — where the
+// leading whitespace is literal content that must not be re-indented. It
+// records exactly one entry per newline (so the result aligns with
+// strings.Split(raw, "\n")), which a skip-to-close scan cannot guarantee when a
+// literal itself contains a newline.
+func stringLineMask(raw string) []bool {
+	mask := []bool{false} // line 0 always begins in code context
+	var inInterp, inRaw, inRune, escaped bool
+	for i := range len(raw) {
+		c := raw[i]
+		switch {
+		case c == '\n':
+			mask = append(mask, inAnyString(inInterp, inRaw, inRune))
+			escaped = false
+		case escaped:
+			escaped = false
+		case inRaw:
+			inRaw = c != '`'
+		case inInterp:
+			escaped, inInterp = updateStringState(c, '"', inInterp)
+		case inRune:
+			escaped, inRune = updateStringState(c, '\'', inRune)
+		default:
+			inInterp, inRaw, inRune = c == '"', c == '`', c == '\''
+		}
+	}
+	return mask
+}
+
+// inAnyString reports whether any string-literal state is open.
+func inAnyString(interp, raw, char bool) bool { return interp || raw || char }
+
+// updateStringState advances one byte inside an escaped (interpreted-string or
+// char) literal delimited by quote: a backslash escapes the next byte, and the
+// unescaped quote closes the literal. Returns the new (escaped, open) state.
+func updateStringState(c, quote byte, open bool) (escaped, stillOpen bool) {
+	switch c {
+	case '\\':
+		return true, open
+	case quote:
+		return false, false
+	default:
+		return false, open
+	}
 }
