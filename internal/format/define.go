@@ -53,12 +53,28 @@ func reformatDefineBlock(raw string) string {
 	if open < 0 || closeIdx < open+2 {
 		return raw
 	}
-	lead, core, trail := splitSurroundingSpace(raw[open+2 : closeIdx])
-	formatted, ok := formatGoFragment(core)
+	formatted, ok := formatDefineBody(raw[open+2 : closeIdx])
 	if !ok {
 		return raw
 	}
-	return raw[:open+2] + lead + formatted + trail + raw[closeIdx:]
+	return raw[:open+2] + formatted + raw[closeIdx:]
+}
+
+// formatDefineBody formats a define block's body. A pure-Go body is reflowed by
+// gofumpt with its surrounding whitespace preserved; any other body — a
+// template fragment — is re-indented by its own template/brace structure via
+// the tiling indenter. ok is false only when neither applies (the fragment
+// does not even tile), leaving the body verbatim.
+func formatDefineBody(body string) (string, bool) {
+	lead, core, trail := splitSurroundingSpace(body)
+	if out, ok := formatGoFragment(core); ok {
+		return lead + out + trail, true
+	}
+	til, err := tiling.ScanTiling(body)
+	if err != nil {
+		return body, false
+	}
+	return tilingIndent(til), true
 }
 
 // formatGoFragment formats a Go fragment with gofumpt, returning ok=false when

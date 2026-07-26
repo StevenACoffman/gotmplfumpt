@@ -68,15 +68,14 @@ Instead, do more of the work *around* gofumpt and hand it better stubs.
       exactly one entry per newline. Regression seed committed under
       `internal/tiling/testdata/fuzz`. `internal/tiling/reindent.go`.
 
-- [ ] **Decide whether reindented template-fragment `define` bodies should be
-      verbatim.** _(discovered)_ Scope narrowed by the define-formatting work
-      above: pure-Go define bodies are now properly formatted, but a
-      template-fragment define body (with `{{…}}`, e.g. eventgen) still takes
-      the primary path and is reindented to its sentinel column, stripping
-      interior indentation (eventgen-publish IN `\t{{- if` → OUT `{{- if`).
-      Decide whether to skip reindent for `Define` slices; if so, regenerate the
-      eventgen-* goldens. Location: `internal/tiling/stubrestore.go` (`Restore`)
-      — guard reindent on `s.Type != Define`.
+- [x] **Reindented template-fragment `define` bodies — resolved.** _(done)_
+      Two layers: (B) `Restore` now skips reindent for `Define` slices, so an
+      opaque body is never flattened to the sentinel column (also fixes a latent
+      bug where that would undo the pre-pass's gofumpt formatting of a pure-Go
+      body); (C) the pre-pass then structurally re-indents template-fragment
+      bodies via `tilingIndent` (with an `{{else}}` dedent fix so `{{if/else/end}}`
+      align), degrading to verbatim (B) if the fragment does not tile. eventgen
+      goldens now show Go bodies indented by depth with control tags at column 0.
 
 - [x] **Lock in the trim-marker whitespace behavior with a fixture.** _(done)_
       Added `trim-marker-whitespace.tpl.go` (a fallback-path fragment where the

@@ -33,6 +33,10 @@ func TestTilingIndent(t *testing.T) {
 			in:   "{{ if .X }}\na\n{{ end }}\n",
 			want: "{{ if .X }}\n\ta\n{{ end }}\n",
 		},
+		"else dedents to block level": {
+			in:   "{{ if .X }}\na\n{{ else }}\nb\n{{ end }}\n",
+			want: "{{ if .X }}\n\ta\n{{ else }}\n\tb\n{{ end }}\n",
+		},
 		"branch inside func body adds depths": {
 			in:   "func F() {\n{{ if .X }}\nreturn 1\n{{ end }}\n}\n",
 			want: "func F() {\n\t{{ if .X }}\n\t\treturn 1\n\t{{ end }}\n}\n",

@@ -63,7 +63,10 @@ func (t Tiling) Restore(formatted string) (string, error) {
 			b.WriteString(formatted[cur : cur+off])
 		}
 		raw := t.Raw(s)
-		if strings.Contains(raw, "\n") {
+		// A Define slice is opaque: its body is emitted verbatim, never
+		// realigned to the sentinel column (which would strip the body's
+		// interior indentation and undo any formatting applied to it).
+		if s.Type != Define && strings.Contains(raw, "\n") {
 			raw = reindentContinuation(formatted, cur+off, raw)
 		}
 		b.WriteString(raw)

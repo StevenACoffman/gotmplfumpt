@@ -80,9 +80,14 @@ func TestReformatDefineBlock(t *testing.T) {
 			want: "{{ define \"x\" }}\nfunc F() {}\n{{ end }}",
 		},
 		{
-			name: "template-fragment body untouched",
+			name: "one-liner template-fragment body unchanged",
 			raw:  "{{define \"x\"}}{{ .Y }}{{end}}",
 			want: "{{define \"x\"}}{{ .Y }}{{end}}",
+		},
+		{
+			name: "multi-line template-fragment body structurally indented",
+			raw:  "{{define \"x\"}}\n{{ if .Y }}\na\n{{ end }}\n{{end}}",
+			want: "{{define \"x\"}}\n{{ if .Y }}\n\ta\n{{ end }}\n{{end}}",
 		},
 	}
 	for _, tt := range tests {

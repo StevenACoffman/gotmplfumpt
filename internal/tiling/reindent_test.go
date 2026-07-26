@@ -43,6 +43,18 @@ func TestRestoreDoesNotCorruptRawString(t *testing.T) {
 	}
 }
 
+// TestRestoreLeavesDefineBodyVerbatim checks that an opaque define block's
+// interior indentation is preserved through roundTrip rather than flattened to
+// the sentinel column (the block is opaque, so its body is not reindented).
+func TestRestoreLeavesDefineBodyVerbatim(t *testing.T) {
+	t.Parallel()
+	const src = "{{define \"x\"}}\n\tif y {\n\t\treturn\n\t}\n{{end}}\n"
+	got := roundTrip(t, src, func(stub string) string { return stub })
+	if got != src {
+		t.Errorf("define body changed = %q, want verbatim %q", got, src)
+	}
+}
+
 // TestRestoreReindentsCodeButNotRawString checks the mixed case: a continuation
 // line in code context is reindented, while a later line inside a raw string is
 // not.

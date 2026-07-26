@@ -1,12 +1,12 @@
 {{- define "columnTest" -}}
 {{- if .Nullable -}}
-if (evt.{{ title .Name }} == nil) != (expected{{ title .Name }} == nil) {
-return errors.Internal("nullable mismatch")
-}
+	if (evt.{{ title .Name }} == nil) != (expected{{ title .Name }} == nil) {
+		return errors.Internal("nullable mismatch")
+	}
 {{- else -}}
-if evt.{{ title .Name }} != expected{{ title .Name }} {
-return errors.Internal("value mismatch")
-}
+	if evt.{{ title .Name }} != expected{{ title .Name }} {
+		return errors.Internal("value mismatch")
+	}
 {{- end -}}
 {{- end -}}
 

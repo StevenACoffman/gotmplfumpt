@@ -88,16 +88,6 @@ func (ix *depthIndenter) step() {
 	switch s.Type {
 	case tiling.Literal:
 		ix.literalByte()
-	case tiling.BlockOpen:
-		if ix.i == s.Start {
-			ix.addDelta(+1, true)
-		}
-		ix.i++
-	case tiling.BlockClose:
-		if ix.i == s.Start {
-			ix.addDelta(-1, false)
-		}
-		ix.i++
 	case tiling.Define:
 		ix.verbatim = true
 		ix.i++
@@ -106,8 +96,30 @@ func (ix *depthIndenter) step() {
 			ix.verbatim = true
 		}
 		ix.i++
-	case tiling.BlockMid, tiling.Action:
+	case tiling.BlockOpen, tiling.BlockClose, tiling.BlockMid:
+		if ix.i == s.Start {
+			ix.blockDelta(s.Type)
+		}
 		ix.i++
+	case tiling.Action:
+		ix.i++
+	}
+}
+
+// blockDelta applies a control tag's depth change at its start: an opening tag
+// indents what follows; a closing tag dedents this line; an {{else}} dedents
+// its own line to the block level but keeps the following body indented.
+func (ix *depthIndenter) blockDelta(t tiling.SliceType) {
+	switch t {
+	case tiling.BlockOpen:
+		ix.addDelta(+1, true)
+	case tiling.BlockClose:
+		ix.addDelta(-1, false)
+	case tiling.BlockMid:
+		ix.addDelta(-1, false)
+		ix.addDelta(+1, true)
+	case tiling.Literal, tiling.Action, tiling.Comment, tiling.Define:
+		// Not control tags; blockDelta is only called for the three above.
 	}
 }
 
