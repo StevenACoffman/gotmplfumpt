@@ -31,20 +31,24 @@ func Format(text string) (string, error) {
 		return text, nil
 	}
 
-	if out, ok := formatViaGofumpt(root, text); ok {
-		return out, nil
-	}
-	return fallbackFormat(root), nil
-}
-
-// formatViaGofumpt is the primary path: tile → stub → gofumpt → restore →
-// structural verify. Returns (formatted, true) on success; (_, false)
-// when any step fails so the caller can fall back.
-func formatViaGofumpt(root parse.Node, text string) (string, bool) {
+	// Build the tiling once and share it with both paths. A template that
+	// parse.Parse accepted always tiles (both require balanced, terminated
+	// delimiters), so this error is a should-not-happen invariant violation;
+	// surface it rather than hide it.
 	til, err := tiling.ScanTiling(text)
 	if err != nil {
-		return "", false
+		return "", fmt.Errorf("tile template: %w", err)
 	}
+	if out, ok := formatViaGofumpt(root, til); ok {
+		return out, nil
+	}
+	return tilingIndent(til), nil
+}
+
+// formatViaGofumpt is the primary path: stub → gofumpt → restore →
+// structural verify. Returns (formatted, true) on success; (_, false)
+// when any step fails so the caller can fall back.
+func formatViaGofumpt(root parse.Node, til tiling.Tiling) (string, bool) {
 	formatted, err := formatGo([]byte(til.Stub()))
 	if err != nil {
 		return "", false
