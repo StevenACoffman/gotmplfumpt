@@ -19,18 +19,14 @@ dead outside `parse`'s own tests.
       paths. Deleted the old `fallback.go` (`reindentByDepth`/`lineWalker`,
       ~398 lines). All golden outputs unchanged.
 
-- [ ] **B. Delete `parse/adjacent.go` and the printer's adjacency.** _(design)_
-      Now fully unblocked: with the fallback off `root.String()`, nothing
-      outside `parse`'s own tests calls the AST printer, so `markAdjacency`
-      (still called unconditionally at `parse.go:98`), `PrevAdjacent`, and the
-      printer's `writeControlIndent` suppression are dead in practice — the
-      `unused` linter stays quiet only because `String()` is exported. Decide
-      whether to keep the printer as public API or remove it; if removed, delete
-      `adjacent.go`, its test, the `PrevAdjacent` fields, and the adjacency
-      branch in the printer. That collapses the last duplicate `{{…}}` scanner
-      (the tiling scanner remains, plus the `parse/lex.go` lexer, which is a
-      different concern). Location: `internal/parse/adjacent.go`,
-      `internal/parse/node.go`, `internal/parse/parse.go`.
+- [x] **B. Delete `parse/adjacent.go` and the printer's adjacency.** _(done)_
+      Deleted `adjacent.go` + its test, removed the `markAdjacency` call and the
+      `PrevAdjacent` fields, and reverted the printer to its unconditional
+      `writeControlIndent` default (the more idempotent path). The kept printer
+      (public `String()` API) round-trips as before, confirmed by
+      `FuzzParseString`; all golden outputs unchanged (both adjacency fixtures
+      now format via the tiling, not the printer). This collapses the last
+      duplicate `{{…}}` scanner outside the `parse/lex.go` lexer.
 
 ## Formatter strategy — reduce fallbacks, feed gofumpt richer Go
 
@@ -62,14 +58,14 @@ Instead, do more of the work *around* gofumpt and hand it better stubs.
 
 ## Correctness follow-ups
 
-- [ ] **Reindent corrupts a balanced multi-line raw string inside an action.**
-      _(discovered)_ `reindentContinuation`'s guard skips only when the action's
-      raw has an _odd_ number of backticks, so an action like
-      `` {{ printf `a\nb` }} `` (balanced) is reindented, inserting indentation
-      _into_ the raw string's value. Pre-existing behavior, ported verbatim.
-      Fix: track raw-string spans within the action and skip continuation lines
-      that fall inside one, rather than counting backticks over the whole raw.
-      Location: `internal/tiling/reindent.go`.
+- [x] **Reindent corrupts a balanced multi-line raw string inside an action.**
+      _(done)_ Replaced the odd-backtick-count guard with `stringLineMask`, a
+      per-line scan that marks any line beginning inside a string, raw-string, or
+      char literal so reindent leaves it verbatim. Fuzzing (`FuzzStructurePreserved`)
+      caught a deeper case the first cut missed — an interpreted string holding a
+      literal newline (`{{"\n"}}`) desynced the mask and panicked; the fix records
+      exactly one entry per newline. Regression seed committed under
+      `internal/tiling/testdata/fuzz`. `internal/tiling/reindent.go`.
 
 - [ ] **Decide whether opaque `define` bodies should be truly verbatim.**
       _(discovered)_ An opaque define block is currently reindented to its
