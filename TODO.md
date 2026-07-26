@@ -6,29 +6,59 @@ model; items marked _(design)_ come from the SQLFluff source-map comparison.
 
 ## Architecture — finish routing everything through the tiling
 
-The tiling replaced the heuristics on the **gofumpt path** only. The fallback
-path is still a parallel universe with its own scanner and its own adjacency
-pass, so the SQLFluff "one invariant, one source of truth" win holds for the
-primary path but not globally. These two items close that gap; B depends on A.
+The tiling replaced the heuristics on the **gofumpt path** first. Item A then
+routed the fallback through the tiling too, so both paths now share one scan.
+Item B is the remaining cleanup: the AST printer and its adjacency pass are now
+dead outside `parse`'s own tests.
 
-- [ ] **A. Route the fallback path through the tiling.** _(design)_ Highest-
-      leverage remaining work. `fallbackFormat` still indents from
-      `root.String()` (the AST printer) plus its own `lineWalker` brace scanner
-      and `reindentByDepth` — it never sees the tiling. Build the tiling once and
-      drive the brace-depth indent from its typed slices instead, so the primary
-      and fallback paths share one scan of the source. Location:
-      `internal/format/fallback.go`, `internal/format/format.go`.
+- [x] **A. Route the fallback path through the tiling.** _(done)_ The fallback
+      (`internal/format/indent.go`, `tilingIndent`) now indents `til.Src` by
+      combined template-block depth (from the tiling's typed slices) and
+      Go-brace depth (from a scan of the Literal slices), keeping everything
+      verbatim. `format.go` builds the tiling once and shares it with both
+      paths. Deleted the old `fallback.go` (`reindentByDepth`/`lineWalker`,
+      ~398 lines). All golden outputs unchanged.
 
-- [ ] **B. Delete `parse/adjacent.go` and collapse the duplicate scanners.**
-      _(design)_ Depends on A. The gofumpt path's adjacency is now
-      `precededByLiteral` (a read on the tiling), but the fallback path still
-      recomputes it via `markAdjacency` — two adjacency computations, and four
-      independent `{{…}}` scanners total (`tiling/scan.go`, `format/fallback.go`
-      `lineWalker`, `parse/lex.go`, `parse/adjacent.go`). Once the fallback runs
-      on the tiling (A), `markAdjacency`/`PrevAdjacent` and the printer's
-      adjacency suppression become dead, and the fallback scanner folds into the
-      tiling scanner. Location: `internal/parse/adjacent.go`,
-      `internal/parse/node.go`, `internal/format/fallback.go`.
+- [ ] **B. Delete `parse/adjacent.go` and the printer's adjacency.** _(design)_
+      Now fully unblocked: with the fallback off `root.String()`, nothing
+      outside `parse`'s own tests calls the AST printer, so `markAdjacency`
+      (still called unconditionally at `parse.go:98`), `PrevAdjacent`, and the
+      printer's `writeControlIndent` suppression are dead in practice — the
+      `unused` linter stays quiet only because `String()` is exported. Decide
+      whether to keep the printer as public API or remove it; if removed, delete
+      `adjacent.go`, its test, the `PrevAdjacent` fields, and the adjacency
+      branch in the printer. That collapses the last duplicate `{{…}}` scanner
+      (the tiling scanner remains, plus the `parse/lex.go` lexer, which is a
+      different concern). Location: `internal/parse/adjacent.go`,
+      `internal/parse/node.go`, `internal/parse/parse.go`.
+
+## Formatter strategy — reduce fallbacks, feed gofumpt richer Go
+
+Keep gofumpt as the Go-layout oracle (the tool's contract chains its output to
+gofumpt's byte-for-byte, so replacing gofumpt would mean cloning it exactly).
+Instead, do more of the work *around* gofumpt and hand it better stubs.
+
+- [ ] **Format opaque `define` bodies and fragments via gofumpt-on-a-wrapped
+      fragment.** _(design)_ A define body is usually a standalone-invalid Go
+      fragment (no `package`), so today it is passed through verbatim. Wrap such
+      a body in a synthetic `package p\n` (or the minimal context that makes it
+      parse), run gofumpt, and unwrap — formatting the body instead of leaving
+      it ugly, without a bespoke formatter. Targeted win; no rewrite. Location:
+      `internal/tiling` (Define handling), `internal/format`.
+
+- [ ] **Context-sensitive stubbing: map control tags to real Go blocks.**
+      _(design)_ Highest-upside experiment. Today `{{if}}` becomes an inert
+      `/* comment */`, chosen so template nesting need not match Go brace
+      nesting — but then gofumpt never sees the block as an indent scope, which
+      forces the reindent hacks and many fallbacks. In **statement context**,
+      stub `{{if .X}}…{{end}}` as `if true {…}` and `{{range}}` as
+      `for range x {…}` — real Go blocks gofumpt indents natively — then restore
+      the delimiters. This is "make the process aware of both languages" done by
+      feeding gofumpt richer Go rather than replacing it. Risk: detecting
+      statement vs. expression vs. top-level context is itself non-trivial and is
+      where a new edge-case tail could grow; gate it behind the context the
+      tiling can determine reliably, and fall back to comment sentinels
+      otherwise. Location: `internal/tiling/sentinel.go`, `scan.go`.
 
 ## Correctness follow-ups
 
