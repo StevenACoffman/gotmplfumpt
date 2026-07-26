@@ -34,13 +34,14 @@ Keep gofumpt as the Go-layout oracle (the tool's contract chains its output to
 gofumpt's byte-for-byte, so replacing gofumpt would mean cloning it exactly).
 Instead, do more of the work *around* gofumpt and hand it better stubs.
 
-- [ ] **Format opaque `define` bodies and fragments via gofumpt-on-a-wrapped
-      fragment.** _(design)_ A define body is usually a standalone-invalid Go
-      fragment (no `package`), so today it is passed through verbatim. Wrap such
-      a body in a synthetic `package p\n` (or the minimal context that makes it
-      parse), run gofumpt, and unwrap — formatting the body instead of leaving
-      it ugly, without a bespoke formatter. Targeted win; no rewrite. Location:
-      `internal/tiling` (Define handling), `internal/format`.
+- [x] **Format opaque `define` bodies via gofumpt-on-a-wrapped fragment.**
+      _(done)_ `internal/format/define.go` reflows each PURE-GO define body
+      (a whole file directly, a package-less declaration list wrapped in a
+      synthetic `package` and unwrapped) before the main pipeline. Bodies
+      containing a template action (`{{…}}`) are refused, so their delimiters
+      are never reflowed — this leaves template-fragment defines (e.g.
+      eventgen) untouched. define-block's golden now shows cleaned-up bodies;
+      all others unchanged; idempotent.
 
 - [ ] **Context-sensitive stubbing: map control tags to real Go blocks.**
       _(design)_ Highest-upside experiment. Today `{{if}}` becomes an inert
@@ -67,21 +68,21 @@ Instead, do more of the work *around* gofumpt and hand it better stubs.
       exactly one entry per newline. Regression seed committed under
       `internal/tiling/testdata/fuzz`. `internal/tiling/reindent.go`.
 
-- [ ] **Decide whether opaque `define` bodies should be truly verbatim.**
-      _(discovered)_ An opaque define block is currently reindented to its
-      sentinel column, stripping interior indentation (e.g. eventgen-publish IN
-      `\t{{- if` becomes OUT `{{- if`). This is faithful to the pre-tiling tool,
-      so it was preserved — but "opaque" arguably implies verbatim. If we skip
-      reindent for `Define` slices, regenerate the eventgen-* golden outputs and
-      note the behavior change. Location: `internal/tiling/stubrestore.go`
-      (`Restore`) — guard reindent on `s.Type != Define`.
+- [ ] **Decide whether reindented template-fragment `define` bodies should be
+      verbatim.** _(discovered)_ Scope narrowed by the define-formatting work
+      above: pure-Go define bodies are now properly formatted, but a
+      template-fragment define body (with `{{…}}`, e.g. eventgen) still takes
+      the primary path and is reindented to its sentinel column, stripping
+      interior indentation (eventgen-publish IN `\t{{- if` → OUT `{{- if`).
+      Decide whether to skip reindent for `Define` slices; if so, regenerate the
+      eventgen-* goldens. Location: `internal/tiling/stubrestore.go` (`Restore`)
+      — guard reindent on `s.Type != Define`.
 
-- [ ] **Lock in the trim-marker whitespace behavior with a fixture.**
-      _(discovered)_ The tiling emits literals verbatim from source, so
-      whitespace the old `TextNode`-based stub dropped before a `{{-` marker
-      (e.g. `A  {{- .X}}`) is now preserved. No golden fixture exercises this.
-      Add `internal/format/testdata/golden/{in,out}/trim-marker-whitespace.*`
-      to pin the (more correct) behavior and confirm it is intended.
+- [x] **Lock in the trim-marker whitespace behavior with a fixture.** _(done)_
+      Added `trim-marker-whitespace.tpl.go` (a fallback-path fragment where the
+      preservation is not masked by gofumpt reindentation): the two spaces
+      before `{{- .Tag }}`, which the old `TextNode`-based stub trimmed, survive
+      to the output and the golden's idempotency/reparse gates pass.
 
 ## Simplification
 
