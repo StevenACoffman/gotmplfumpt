@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/StevenACoffman/gotmplfumpt/internal/parse"
+	"github.com/StevenACoffman/gotmplfumpt/internal/tiling"
 )
 
 // Format formats a Go template source string. The interface is deliberately
@@ -36,16 +37,19 @@ func Format(text string) (string, error) {
 	return fallbackFormat(root), nil
 }
 
-// formatViaGofumpt is the primary path: stub → gofumpt → restore →
+// formatViaGofumpt is the primary path: tile → stub → gofumpt → restore →
 // structural verify. Returns (formatted, true) on success; (_, false)
 // when any step fails so the caller can fall back.
 func formatViaGofumpt(root parse.Node, text string) (string, bool) {
-	stub := stubGo(root, text)
-	formatted, err := formatGo([]byte(stub.Go))
+	til, err := tiling.ScanTiling(text)
 	if err != nil {
 		return "", false
 	}
-	out, err := restore(string(formatted), stub.Entries, stub.Prefix)
+	formatted, err := formatGo([]byte(til.Stub()))
+	if err != nil {
+		return "", false
+	}
+	out, err := til.Restore(string(formatted))
 	if err != nil {
 		return "", false
 	}
