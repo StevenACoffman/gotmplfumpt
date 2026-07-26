@@ -49,7 +49,13 @@ type SliceType uint8
 // Tiling.Slices sequence is its identity, which keeps the type minimal and
 // makes the sentinel numbering fall out of the ordering.
 type RawSlice struct {
-	Type  SliceType
+	Type SliceType
+	// Block is a monotonic block-region id (the SQLFluff block_idx analog):
+	// slices in the same flat region between control-tag boundaries share it,
+	// and it increments at each BlockOpen/BlockClose. It lets a verify assert
+	// that formatting never moved a sentinel across a block boundary, and is
+	// groundwork for future block-aware rules.
+	Block int
 	Start int
 	Stop  int
 }

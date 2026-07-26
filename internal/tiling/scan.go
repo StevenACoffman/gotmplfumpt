@@ -24,36 +24,48 @@ import (
 func ScanTiling(src string) (Tiling, error) {
 	var slices []RawSlice
 	litStart := 0
+	block := 0 // monotonic block-region id; increments at each block boundary
 	for i := 0; i < len(src); {
 		if !strings.HasPrefix(src[i:], "{{") {
 			i++
 			continue
 		}
 		if i > litStart {
-			slices = append(slices, RawSlice{Type: Literal, Start: litStart, Stop: i})
+			slices = append(slices, RawSlice{Type: Literal, Block: block, Start: litStart, Stop: i})
 		}
-		end, typ, ok := scanAction(src, i)
+		end, typ, ok := nextSlice(src, i)
 		if !ok {
 			return Tiling{}, fmt.Errorf("tiling: unterminated action at byte %d", i)
 		}
-		if typ == Define {
-			end, ok = defineBlockEnd(src, i)
-			if !ok {
-				return Tiling{}, fmt.Errorf("tiling: unterminated define block at byte %d", i)
-			}
+		slices = append(slices, RawSlice{Type: typ, Block: block, Start: i, Stop: end})
+		if typ == BlockOpen || typ == BlockClose {
+			block++ // a control-tag boundary starts a new region
 		}
-		slices = append(slices, RawSlice{Type: typ, Start: i, Stop: end})
 		i = end
 		litStart = end
 	}
 	if litStart < len(src) {
-		slices = append(slices, RawSlice{Type: Literal, Start: litStart, Stop: len(src)})
+		slices = append(
+			slices,
+			RawSlice{Type: Literal, Block: block, Start: litStart, Stop: len(src)},
+		)
 	}
 	t := Tiling{Src: src, Slices: slices, prefix: uniquePrefix(src)}
 	if err := t.Check(); err != nil {
 		return Tiling{}, err
 	}
 	return t, nil
+}
+
+// nextSlice scans the non-literal slice beginning at the "{{" at i, returning
+// the offset just past its close and its type. For a Define it spans the whole
+// {{define}}…{{end}} block. ok is false on an unterminated action or block.
+func nextSlice(src string, i int) (end int, typ SliceType, ok bool) {
+	end, typ, ok = scanAction(src, i)
+	if ok && typ == Define {
+		end, ok = defineBlockEnd(src, i)
+	}
+	return end, typ, ok
 }
 
 // defineBlockEnd returns the offset just past the {{end}} that closes the
