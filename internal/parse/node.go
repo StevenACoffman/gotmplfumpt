@@ -161,23 +161,16 @@ type CommandNode struct {
 }
 
 // EndNode represents an {{end}} action.
-//
-// PrevAdjacent is set by the post-parse markAdjacency pass. When true,
-// the printer omits the forced newline before this action so the
-// source's back-to-back layout is preserved on round-trip.
 type EndNode struct {
 	tr *Tree
 	NodeType
 	Pos
-	Trim         trim
-	Line         int
-	PrevAdjacent bool
+	Trim trim
+	Line int
 }
 
 // ElseNode represents an {{else}}, {{else if}}, or {{else with}} action.
 // Does not appear in the final tree.
-//
-// PrevAdjacent: see EndNode.PrevAdjacent.
 type ElseNode struct {
 	tr *Tree
 	NodeType
@@ -185,14 +178,11 @@ type ElseNode struct {
 	List    *ListNode
 	Keyword string
 	Pos
-	Trim         trim
-	Line         int
-	PrevAdjacent bool
+	Trim trim
+	Line int
 }
 
 // BranchNode is the common representation of if, range, and with.
-//
-// PrevAdjacent: see EndNode.PrevAdjacent.
 type BranchNode struct {
 	tr *Tree
 	NodeType
@@ -202,9 +192,8 @@ type BranchNode struct {
 	Keyword string
 	Elses   []*ElseNode
 	Pos
-	Trim         trim
-	Line         int
-	PrevAdjacent bool
+	Trim trim
+	Line int
 }
 
 // Position returns the byte position.
@@ -647,12 +636,7 @@ func (e *EndNode) String() string {
 func (e *EndNode) lineNumber() int { return e.Line }
 
 func (e *EndNode) writeTo(sb *printer) {
-	// PrevAdjacent: this {{end}} immediately followed the prior action
-	// in source, so skip the forced newline that writeControlIndent
-	// would otherwise insert.
-	if !e.PrevAdjacent {
-		sb.writeControlIndent()
-	}
+	sb.writeControlIndent()
 	_, _ = sb.WriteString(e.Trim.leftDelim())
 	_, _ = sb.WriteString("end")
 	_, _ = sb.WriteString(e.Trim.rightDelim())
@@ -689,10 +673,7 @@ func (e *ElseNode) String() string {
 func (e *ElseNode) lineNumber() int { return e.Line }
 
 func (e *ElseNode) writeTo(sb *printer) {
-	// See EndNode.writeTo for the PrevAdjacent rationale.
-	if !e.PrevAdjacent {
-		sb.writeControlIndent()
-	}
+	sb.writeControlIndent()
 	_, _ = sb.WriteString(e.Trim.leftDelim())
 	_, _ = sb.WriteString("else")
 	if e.Pipe != nil {
@@ -728,14 +709,9 @@ func (b *BranchNode) writeTo(sb *printer) {
 	if lineno(b) == lineno(b.End) {
 		sb.inOneLiner = true
 	}
-	switch {
-	case sb.inOneLiner:
+	if sb.inOneLiner {
 		sb.writeBranchIndent()
-	case b.PrevAdjacent:
-		// Adjacent to the prior action in source — emit no newline or
-		// indent so the back-to-back layout round-trips. See
-		// EndNode.writeTo for context.
-	default:
+	} else {
 		sb.writeControlIndent()
 	}
 	sb.writeAction(b.Keyword, b.Pipe, b.Trim)
