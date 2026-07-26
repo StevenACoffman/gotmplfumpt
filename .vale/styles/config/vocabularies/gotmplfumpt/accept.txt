@@ -1,0 +1,22 @@
+# Repo-local Vale vocabulary for gotmplfumpt.
+# Go-template / formatter jargon and tool names used in the docs.
+# (?i) = accept any casing (so title-cased headings and lowercase commands
+# both pass, and Vale.Terms does not fight rumdl's heading capitalization).
+
+# Tool and product names
+(?i)gotmplfumpt
+(?i)gofumpt
+(?i)gowheels
+SQLFluff
+(?i)pypi
+
+# Formatter / template jargon
+(?i)codegen
+(?i)idempotency
+(?i)reindent
+(?i)reindentation
+(?i)reparse
+(?i)reflowed
+(?i)desynced
+(?i)goldens
+(?i)eventgen
