@@ -3,8 +3,8 @@
 // Format(text) parses the text as a Go template, replaces each {{…}}
 // action with a sentinel, runs gofumpt on the resulting Go, then
 // substitutes the original action bytes back. When gofumpt rejects the
-// stubbed Go, Format falls back to the parser's own AST printer so the
-// output is at least idempotent.
+// stubbed Go, Format falls back to a tiling-driven brace-depth indenter so
+// the output is at least idempotent.
 package format
 
 import (
@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/StevenACoffman/gotmplfumpt/internal/parse"
+	"github.com/StevenACoffman/gotmplfumpt/internal/tiling"
 )
 
 // Format formats a Go template source string. The interface is deliberately
@@ -30,34 +31,47 @@ func Format(text string) (string, error) {
 		return text, nil
 	}
 
-	if out, ok := formatViaGofumpt(root, text); ok {
+	// Format opaque {{define}} bodies before the main pipeline, which treats
+	// them as verbatim. Re-parse only to confirm a reflowed body still yields
+	// a valid template (reflowing keeps the delimiters, so this cannot fail in
+	// practice); the parse tree itself is no longer needed past this point.
+	if formatted := formatDefineBodies(text); formatted != text {
+		text = formatted
+		if _, err := parse.Parse(text); err != nil {
+			return "", fmt.Errorf("parse template: %w", err)
+		}
+	}
+
+	// Build the tiling once and share it with both paths. A template that
+	// parse.Parse accepted always tiles (both require balanced, terminated
+	// delimiters), so this error is a should-not-happen invariant violation;
+	// surface it rather than hide it.
+	til, err := tiling.ScanTiling(text)
+	if err != nil {
+		return "", fmt.Errorf("tile template: %w", err)
+	}
+	if out, ok := formatViaGofumpt(til); ok {
 		return out, nil
 	}
-	return fallbackFormat(root), nil
+	return tilingIndent(til), nil
 }
 
-// formatViaGofumpt is the primary path: stub → gofumpt → restore →
-// structural verify. Returns (formatted, true) on success; (_, false)
-// when any step fails so the caller can fall back.
-func formatViaGofumpt(root parse.Node, text string) (string, bool) {
-	stub := stubGo(root, text)
-	formatted, err := formatGo([]byte(stub.Go))
+// formatViaGofumpt is the primary path: stub → gofumpt → verify → restore.
+// Returns (formatted, true) on success; (_, false) when any step fails so the
+// caller can fall back.
+func formatViaGofumpt(til tiling.Tiling) (string, bool) {
+	formatted, err := formatGo([]byte(til.Stub()))
 	if err != nil {
 		return "", false
 	}
-	out, err := restore(string(formatted), stub.Entries, stub.Prefix)
-	if err != nil {
+	// Assert gofumpt left every sentinel intact and in order (so no sentinel
+	// crossed a block boundary); a mismatch means restoration would corrupt
+	// the template, so fall back. This is a cheaper check than reparsing.
+	if err := til.VerifyFormatted(string(formatted)); err != nil {
 		return "", false
 	}
-	// Structural sanity check: re-parse the output and compare the
-	// action sequence to the input. A mismatch means restoration lost
-	// or duplicated an action; fall back rather than emit corrupted
-	// output.
-	reparsed, err := parse.Parse(out)
+	out, err := til.Restore(string(formatted))
 	if err != nil {
-		return "", false
-	}
-	if !shapesEqual(computeShape(root), computeShape(reparsed)) {
 		return "", false
 	}
 	return out, true

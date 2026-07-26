@@ -1,15 +1,22 @@
-// fallback_test.go drives the unexported reindentByDepth helper.
+// indent_test.go is a white-box test: tilingIndent is unexported and the
+// test drives it directly against the tiling, so it lives in package format.
 //
-//nolint:testpackage // white-box test of unexported helper.
+//nolint:testpackage // white-box test of the unexported fallback indenter.
 package format
 
-import "testing"
+import (
+	"testing"
 
-// TestReindentByDepth exercises the brace-counting fallback indenter
-// across Go braces, template branches, strings/comments/runes, and
-// define blocks. Each case also asserts idempotence (running the
-// transform twice produces the same output as once).
-func TestReindentByDepth(t *testing.T) {
+	"github.com/StevenACoffman/gotmplfumpt/internal/tiling"
+)
+
+// TestTilingIndent exercises the fallback indenter across Go braces, template
+// branches, strings/comments/runes, define blocks, and template comments,
+// including the two fixtures that actually reach the fallback
+// (define-block, adjacent-actions-fragment). Each case also asserts
+// idempotency.
+func TestTilingIndent(t *testing.T) {
+	t.Parallel()
 	cases := map[string]struct {
 		in   string
 		want string
@@ -26,9 +33,17 @@ func TestReindentByDepth(t *testing.T) {
 			in:   "{{ if .X }}\na\n{{ end }}\n",
 			want: "{{ if .X }}\n\ta\n{{ end }}\n",
 		},
+		"else dedents to block level": {
+			in:   "{{ if .X }}\na\n{{ else }}\nb\n{{ end }}\n",
+			want: "{{ if .X }}\n\ta\n{{ else }}\n\tb\n{{ end }}\n",
+		},
 		"branch inside func body adds depths": {
 			in:   "func F() {\n{{ if .X }}\nreturn 1\n{{ end }}\n}\n",
 			want: "func F() {\n\t{{ if .X }}\n\t\treturn 1\n\t{{ end }}\n}\n",
+		},
+		"nested ranges indent body by template depth": {
+			in:   "{{ range .Events }}{{ range . }}\ntype {{ .Name }} struct{}\n{{ end }}{{ end }}\n",
+			want: "{{ range .Events }}{{ range . }}\n\t\ttype {{ .Name }} struct{}\n{{ end }}{{ end }}\n",
 		},
 		"define body is verbatim": {
 			in:   "{{ define \"x\" }}\npackage main\n\nfunc F() {}\n{{ end }}\n",
@@ -73,15 +88,25 @@ func TestReindentByDepth(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := reindentByDepth(tc.in)
-			if got != tc.want {
-				t.Errorf("reindentByDepth: got %q, want %q", got, tc.want)
+			t.Parallel()
+			if got := indentSource(t, tc.in); got != tc.want {
+				t.Errorf("tilingIndent: got %q, want %q", got, tc.want)
 			}
-			// Idempotency.
-			got2 := reindentByDepth(got)
-			if got2 != got {
-				t.Errorf("not idempotent: first %q, second %q", got, got2)
+			// Idempotency: re-indenting the output is a fixed point.
+			once := indentSource(t, tc.in)
+			if twice := indentSource(t, once); twice != once {
+				t.Errorf("not idempotent: first %q, second %q", once, twice)
 			}
 		})
 	}
+}
+
+// indentSource scans src into a tiling and runs the fallback indenter.
+func indentSource(t *testing.T, src string) string {
+	t.Helper()
+	til, err := tiling.ScanTiling(src)
+	if err != nil {
+		t.Fatalf("ScanTiling(%q): %v", src, err)
+	}
+	return tilingIndent(til)
 }
