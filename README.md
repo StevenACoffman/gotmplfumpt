@@ -116,16 +116,16 @@ steps:
 
 **Note:** it is *easy* to render a Go template into a buffer and then format the result with `gofumpt`:
 
-````go
+```go
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, templateFileData{Capabilities: caps}); err != nil {
 		fmt.Println(err)
 		return
 	}
-	formatted, err := format.Source(buf.Bytes(), format.Options{})```
+	formatted, err := format.Source(buf.Bytes(), format.Options{})
 
-````
+```
 
 The motivations for wanting to format codegen `*.gotmpl` template source files are:
 
