@@ -95,6 +95,7 @@ func (t *Tree) Parse(text string) (err error) {
 	t.lex = lex(text)
 	t.text = text
 	t.parse()
+	markAdjacency(t.Root, t.text)
 	return nil
 }
 
