@@ -4,6 +4,32 @@ Outstanding work, most actionable first. Items marked _(discovered)_ surfaced
 while replacing the stub/restore heuristics with the `internal/tiling` source
 model; items marked _(design)_ come from the SQLFluff source-map comparison.
 
+## Architecture — finish routing everything through the tiling
+
+The tiling replaced the heuristics on the **gofumpt path** only. The fallback
+path is still a parallel universe with its own scanner and its own adjacency
+pass, so the SQLFluff "one invariant, one source of truth" win holds for the
+primary path but not globally. These two items close that gap; B depends on A.
+
+- [ ] **A. Route the fallback path through the tiling.** _(design)_ Highest-
+      leverage remaining work. `fallbackFormat` still indents from
+      `root.String()` (the AST printer) plus its own `lineWalker` brace scanner
+      and `reindentByDepth` — it never sees the tiling. Build the tiling once and
+      drive the brace-depth indent from its typed slices instead, so the primary
+      and fallback paths share one scan of the source. Location:
+      `internal/format/fallback.go`, `internal/format/format.go`.
+
+- [ ] **B. Delete `parse/adjacent.go` and collapse the duplicate scanners.**
+      _(design)_ Depends on A. The gofumpt path's adjacency is now
+      `precededByLiteral` (a read on the tiling), but the fallback path still
+      recomputes it via `markAdjacency` — two adjacency computations, and four
+      independent `{{…}}` scanners total (`tiling/scan.go`, `format/fallback.go`
+      `lineWalker`, `parse/lex.go`, `parse/adjacent.go`). Once the fallback runs
+      on the tiling (A), `markAdjacency`/`PrevAdjacent` and the printer's
+      adjacency suppression become dead, and the fallback scanner folds into the
+      tiling scanner. Location: `internal/parse/adjacent.go`,
+      `internal/parse/node.go`, `internal/format/fallback.go`.
+
 ## Correctness follow-ups
 
 - [ ] **Reindent corrupts a balanced multi-line raw string inside an action.**
