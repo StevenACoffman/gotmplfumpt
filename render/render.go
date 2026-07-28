@@ -99,15 +99,10 @@ func (e Enclosing) String() string {
 // It returns an error when src does not parse, does not execute with data, or
 // renders to invalid Go (gofumpt rejects it — itself a useful diagnosis).
 func Diagnose(src string, funcs template.FuncMap, data any) (Report, error) {
-	tmpl, err := template.New("").Funcs(funcs).Parse(src)
+	rendered, err := execTemplate(src, funcs, data)
 	if err != nil {
-		return Report{}, fmt.Errorf("parse template: %w", err)
+		return Report{}, err
 	}
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return Report{}, fmt.Errorf("execute template: %w", err)
-	}
-	rendered := buf.Bytes()
 	formatted, err := format.GoSource(rendered)
 	if err != nil {
 		return Report{}, fmt.Errorf("rendered output is not valid Go: %w", err)
@@ -117,4 +112,19 @@ func Diagnose(src string, funcs template.FuncMap, data any) (Report, error) {
 	}
 	diffText := string(diff.Diff("rendered.go", rendered, "gofumpt.go", formatted))
 	return Report{Diff: diffText, Findings: findings(diffText, src)}, nil
+}
+
+// execTemplate parses src with funcs and executes it against data, returning the
+// rendered bytes. Parse and execute failures are wrapped so callers (and their
+// tests) can tell the two apart.
+func execTemplate(src string, funcs template.FuncMap, data any) ([]byte, error) {
+	tmpl, err := template.New("").Funcs(funcs).Parse(src)
+	if err != nil {
+		return nil, fmt.Errorf("parse template: %w", err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return nil, fmt.Errorf("execute template: %w", err)
+	}
+	return buf.Bytes(), nil
 }

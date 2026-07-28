@@ -256,14 +256,16 @@ two levers below target exactly those shapes.
       never edits the template; expects a template that renders a complete Go
       file (a fragment render is reported as "not valid Go"). See `render/`.
 
-- [ ] **Render-equivalence check (`render.VerifyFormatPreservesRender`).**
-      _(planned)_ `func VerifyFormatPreservesRender(src string, funcs
-      template.FuncMap, data any) error`. Format the template with the data-less
-      pipeline, then render both the original and the formatted template with the
-      caller's data, gofumpt both, and return an error unless the two render to
-      byte-identical Go. Uses data for what data is good at — verifying that a
-      reformat is render-preserving — rather than the intractable backport, so it
-      needs no source map. Would live beside `render.Diagnose`.
+- [x] **Render-equivalence check (`render.VerifyFormatPreservesRender`).**
+      _(done)_ `func VerifyFormatPreservesRender(src string, funcs
+      template.FuncMap, data any) error`. Formats the template with the data-less
+      pipeline, renders both the original and the formatted template with the
+      caller's data, gofumpts both, and returns nil unless the two render to
+      byte-identical Go — a survivor of gofumpt is a real gotmplfumpt bug. Uses
+      data for what data is good at — verifying a reformat is render-preserving —
+      rather than the intractable backport, so it needs no source map. The error
+      distinguishes cannot-format, a broken original, a reformat that no longer
+      renders (formatter bug), and a diff. In package `render`; see `render/`.
 
 ## Done (This Effort)
 

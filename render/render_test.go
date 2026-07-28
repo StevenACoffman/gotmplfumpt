@@ -140,3 +140,52 @@ func TestDiagnoseErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestVerifyFormatPreservesRender(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		src  string
+		data any
+	}{
+		"already clean whole file": {
+			"package main\n\nfunc F() {}\n", nil,
+		},
+		"reformatted but render-preserving": {
+			"package main\n\nfunc F() {\nx:={{ .N }}\n_ = x\n}\n",
+			map[string]string{"N": "1"},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if err := render.VerifyFormatPreservesRender(tc.src, nil, tc.data); err != nil {
+				t.Errorf("want nil, got %v", err)
+			}
+		})
+	}
+}
+
+func TestVerifyFormatPreservesRenderErrors(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		src     string
+		data    any
+		wantSub string
+	}{
+		"cannot format": {"package main {{ .X", nil, "format template"},
+		"execute error": {"package main {{ .Missing }}", struct{}{}, "execute template"},
+		"invalid go":    {"this is not go\n", nil, "not valid Go"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			err := render.VerifyFormatPreservesRender(tc.src, nil, tc.data)
+			if err == nil {
+				t.Fatalf("want error containing %q, got nil", tc.wantSub)
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("error %q, want it to contain %q", err, tc.wantSub)
+			}
+		})
+	}
+}
