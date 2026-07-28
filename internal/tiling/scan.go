@@ -50,11 +50,39 @@ func ScanTiling(src string) (Tiling, error) {
 			RawSlice{Type: Literal, Block: block, Start: litStart, Stop: len(src)},
 		)
 	}
+	markStandaloneActions(src, slices)
 	t := Tiling{Src: src, Slices: slices, prefix: uniquePrefix(src)}
 	if err := t.Check(); err != nil {
 		return Tiling{}, err
 	}
 	return t, nil
+}
+
+// markStandaloneActions sets Standalone on each Action slice that is the only
+// non-whitespace on its source line.
+func markStandaloneActions(src string, slices []RawSlice) {
+	for i := range slices {
+		if slices[i].Type == Action {
+			slices[i].Standalone = standaloneOnLine(src, slices[i].Start, slices[i].Stop)
+		}
+	}
+}
+
+// standaloneOnLine reports whether [start,stop) is the only non-whitespace on
+// its source line — the text before it back to the previous newline and the
+// text after it up to the next newline are both blank.
+func standaloneOnLine(src string, start, stop int) bool {
+	lineStart := strings.LastIndexByte(src[:start], '\n') + 1
+	if !isAllSpaceOrTab(src[lineStart:start]) {
+		return false
+	}
+	lineEnd := strings.IndexByte(src[stop:], '\n')
+	if lineEnd < 0 {
+		lineEnd = len(src)
+	} else {
+		lineEnd += stop
+	}
+	return isAllSpaceOrTab(src[stop:lineEnd])
 }
 
 // nextSlice scans the non-literal slice beginning at the "{{" at i, returning

@@ -1,3 +1,3 @@
 {{ range .Fields }}
-	{{ .Name }}  {{- .Tag }} {{ .Type }}
+{{ .Name }}  {{- .Tag }} {{ .Type }}
 {{ end }}

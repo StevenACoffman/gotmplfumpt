@@ -1,11 +1,12 @@
 // indent.go is the fallback formatter, used when gofumpt rejects the stub
-// (the template isn't valid whole-file Go). It re-applies a tab indent equal
-// to the combined template-block depth (read from the tiling's typed slices)
-// and Go-brace depth (from a scan of the Literal slices only — the tiling has
-// already carved actions out, so the Go scan never meets a "{{"). Actions and
-// literals are kept verbatim; Define blocks and multi-line comments pass
-// through untouched. "Strip leading whitespace, re-add depth tabs" is a pure
-// function of structure, so the output is idempotent by construction.
+// (the template isn't valid whole-file Go). It re-applies a tab indent equal to
+// the Go-brace depth alone, scanned from the Literal slices only (the tiling has
+// already carved actions out, so the Go scan never meets a "{{"). Control tags
+// are indentation-invisible — they render to no Go braces, so they contribute no
+// depth, matching the gofumpt path. Actions and literals are kept verbatim;
+// Define blocks and multi-line comments pass through untouched. "Strip leading
+// whitespace, re-add depth tabs" is a pure function of structure, so the output
+// is idempotent by construction.
 
 package format
 
@@ -15,16 +16,31 @@ import (
 	"github.com/StevenACoffman/gotmplfumpt/internal/tiling"
 )
 
-// depthIndenter walks the source once, merging template-structure events from
-// the tiling with a Go-brace scan of literal text, and emits indented lines.
+// brace is one open Go bracket the indenter has seen but not yet closed. line
+// is the source line (0-based) it opened on; incremented records whether
+// opening it raised the indent — true only for the first still-open bracket a
+// line contributes, so several brackets opened on one line count as one level.
+// kind is the opener byte ('{', '(', '['); isSwitch is set only for a '{' that
+// opens a switch/select body, so its case/default labels can be dedented.
+type brace struct {
+	line        int
+	kind        byte
+	incremented bool
+	isSwitch    bool
+}
+
+// depthIndenter walks the source once, tracking Go-brace depth from a scan of
+// the literal text, and emits each line re-indented to that depth.
 type depthIndenter struct {
 	src    string
 	slices []tiling.RawSlice
 	i      int // scan cursor into src
 	si     int // index of the slice containing i
 
-	out   []string // finished lines, joined with "\n" at the end
-	depth int      // running combined depth at the current line's start
+	out     []string // finished lines, joined with "\n" at the end
+	depth   int      // running indent depth at the current line's start
+	stack   []brace  // open Go brackets, innermost last
+	curLine int      // 0-based index of the line being scanned
 
 	// current-line accumulation
 	lineStart int
@@ -32,6 +48,7 @@ type depthIndenter struct {
 	linePost  int  // delta from the rest of the line (applied after indent)
 	leading   bool // still in the line's leading zone (no open/content yet)
 	verbatim  bool // line overlaps a Define or multi-line Comment slice
+	inSwitch  bool // line starts directly inside a switch/select body
 
 	// Go lexical state; inRawString and inBlockComment persist across lines.
 	inRawString    bool
@@ -41,8 +58,8 @@ type depthIndenter struct {
 	inLineComment  bool
 }
 
-// tilingIndent re-indents til.Src by combined template-block + Go-brace depth,
-// keeping every slice's bytes verbatim.
+// tilingIndent re-indents til.Src by Go-brace depth, keeping every slice's
+// bytes verbatim.
 //
 // Requires: til satisfies the tiling invariant (ScanTiling guarantees it).
 // Ensures:  output is idempotent; Define and multi-line Comment slices are
@@ -61,6 +78,7 @@ func (ix *depthIndenter) run() string {
 		if ix.src[ix.i] == '\n' {
 			ix.flush(ix.i)
 			ix.i++
+			ix.curLine++
 			ix.startLine(ix.i)
 			continue
 		}
@@ -96,30 +114,12 @@ func (ix *depthIndenter) step() {
 			ix.verbatim = true
 		}
 		ix.i++
-	case tiling.BlockOpen, tiling.BlockClose, tiling.BlockMid:
-		if ix.i == s.Start {
-			ix.blockDelta(s.Type)
-		}
+	case tiling.Action, tiling.BlockOpen, tiling.BlockMid, tiling.BlockClose:
+		// Control tags are indentation-invisible: {{if}}/{{range}}/{{with}}/
+		// {{else}}/{{end}} render to no Go braces, so their bodies belong at the
+		// surrounding Go level, exactly as the gofumpt path already produces.
+		// Actions likewise never change depth. Advance past the byte.
 		ix.i++
-	case tiling.Action:
-		ix.i++
-	}
-}
-
-// blockDelta applies a control tag's depth change at its start: an opening tag
-// indents what follows; a closing tag dedents this line; an {{else}} dedents
-// its own line to the block level but keeps the following body indented.
-func (ix *depthIndenter) blockDelta(t tiling.SliceType) {
-	switch t {
-	case tiling.BlockOpen:
-		ix.addDelta(+1, true)
-	case tiling.BlockClose:
-		ix.addDelta(-1, false)
-	case tiling.BlockMid:
-		ix.addDelta(-1, false)
-		ix.addDelta(+1, true)
-	case tiling.Literal, tiling.Action, tiling.Comment, tiling.Define:
-		// Not control tags; blockDelta is only called for the three above.
 	}
 }
 
@@ -153,12 +153,10 @@ func (ix *depthIndenter) literalByte() {
 }
 
 // literalStart handles a byte outside any Go string/comment: it opens a
-// string/comment substate or records a bracket delta.
+// string/comment substate or records a bracket.
 func (ix *depthIndenter) literalStart(c byte) {
 	if !ix.openGoSubstate(c) {
-		if delta, ok := goBracketDelta(c); ok {
-			ix.addDelta(delta, delta > 0)
-		}
+		ix.recordBracket(c)
 	}
 	ix.i++
 }
@@ -186,16 +184,86 @@ func (ix *depthIndenter) openGoSubstate(c byte) bool {
 	return true
 }
 
-// goBracketDelta returns the depth delta for a single Go bracket byte and
-// whether c is one.
-func goBracketDelta(c byte) (delta int, ok bool) {
+// recordBracket updates the bracket stack for one Go bracket byte and folds its
+// indent effect into the current line's pre/post split. An opener raises the
+// indent only when it is the first still-open bracket its line contributes, so
+// a line opening several brackets indents its body one level — matching gofmt,
+// not one level per bracket. A closer dedents by one only if the opener it
+// matches had raised the indent, keeping the two balanced (and idempotent). A
+// close with an empty stack is an unbalanced fragment and is ignored. Bytes
+// that are not brackets have no effect.
+func (ix *depthIndenter) recordBracket(c byte) {
 	switch c {
 	case '{', '(', '[':
-		return +1, true
+		incremented := len(ix.stack) == 0 || ix.stack[len(ix.stack)-1].line != ix.curLine
+		ix.stack = append(ix.stack, brace{
+			line:        ix.curLine,
+			kind:        c,
+			incremented: incremented,
+			isSwitch:    c == '{' && ix.opensSwitchBody(),
+		})
+		if incremented {
+			ix.addDelta(+1, true)
+		} else {
+			ix.leading = false
+		}
 	case '}', ')', ']':
-		return -1, true
+		if len(ix.stack) == 0 {
+			return
+		}
+		top := ix.stack[len(ix.stack)-1]
+		ix.stack = ix.stack[:len(ix.stack)-1]
+		if top.incremented {
+			ix.addDelta(-1, false)
+		}
 	}
-	return 0, false
+}
+
+// opensSwitchBody reports whether the text before the cursor on the current
+// line begins with the keyword switch or select — the statements whose block
+// dedents its case/default labels. Called from recordBracket with ix.i at the
+// candidate '{', so ix.src[ix.lineStart:ix.i] is that '{'s line prefix.
+func (ix *depthIndenter) opensSwitchBody() bool {
+	prefix := strings.TrimLeft(ix.src[ix.lineStart:ix.i], " \t")
+	return startsWithWord(prefix, "switch") || startsWithWord(prefix, "select")
+}
+
+// enclosingSwitch reports whether the innermost still-open '{' opened a
+// switch/select body. Open parens and brackets are skipped: a case/default
+// label is a direct child of the switch block, not of any expression nested
+// inside it.
+func (ix *depthIndenter) enclosingSwitch() bool {
+	for k := len(ix.stack) - 1; k >= 0; k-- {
+		if ix.stack[k].kind == '{' {
+			return ix.stack[k].isSwitch
+		}
+	}
+	return false
+}
+
+// isCaseLabel reports whether a stripped line begins a case or default label.
+// Both are keywords, so a whole-word match cannot collide with an identifier.
+func isCaseLabel(stripped string) bool {
+	return startsWithWord(stripped, "case") || startsWithWord(stripped, "default")
+}
+
+// startsWithWord reports whether s begins with word as a whole token: the byte
+// following word (if any) must not be an identifier byte, so "switch" matches
+// "switch x {" and "default" matches "default:" but neither matches a longer
+// identifier like "switchboard".
+func startsWithWord(s, word string) bool {
+	if !strings.HasPrefix(s, word) {
+		return false
+	}
+	return len(s) == len(word) || !isIdentByte(s[len(word)])
+}
+
+// isIdentByte reports whether c can appear in a Go identifier.
+func isIdentByte(c byte) bool {
+	return c == '_' ||
+		(c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9')
 }
 
 // consumeEscaped advances through a Go interpreted-string or rune literal
@@ -237,7 +305,10 @@ func (ix *depthIndenter) addDelta(change int, openLike bool) {
 }
 
 // startLine resets per-line accumulation and the within-line Go substates
-// (interpreted string, rune, line comment never cross a newline).
+// (interpreted string, rune, line comment never cross a newline). It snapshots
+// whether the line begins directly inside a switch/select body — computed here,
+// before the line's own brackets are scanned, so a case/default label is judged
+// against the block it lives in.
 func (ix *depthIndenter) startLine(at int) {
 	ix.lineStart = at
 	ix.linePre = 0
@@ -247,6 +318,7 @@ func (ix *depthIndenter) startLine(at int) {
 	ix.inString = false
 	ix.inRune = false
 	ix.inLineComment = false
+	ix.inSwitch = ix.enclosingSwitch()
 }
 
 // flush emits the current line [lineStart, end): verbatim if it overlaps a
@@ -264,7 +336,14 @@ func (ix *depthIndenter) flush(end int) {
 		return
 	}
 	ix.depth = clampDepth(ix.depth + ix.linePre)
-	ix.out = append(ix.out, strings.Repeat("\t", ix.depth)+stripped)
+	display := ix.depth
+	if ix.inSwitch && isCaseLabel(stripped) {
+		// A case/default label sits one level shallower than the statements it
+		// introduces. Dedent the label's own line only; the running depth is
+		// unchanged, so the case body stays at block-body level.
+		display = clampDepth(display - 1)
+	}
+	ix.out = append(ix.out, strings.Repeat("\t", display)+stripped)
 	ix.depth = clampDepth(ix.depth + ix.linePost)
 }
 

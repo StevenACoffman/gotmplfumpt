@@ -4,12 +4,14 @@ This is a formatter for Go templates that emit Go code.
 
 It parses the template with the [text/template/parse](https://pkg.go.dev/text/template/parse) grammar (Go 1.20.4, see license below), partitions the source into a gap-free set of typed slices, replaces each `{{ ... }}` action with a syntactically-valid Go sentinel (an identifier for value actions, a comment for control tags such as `{{if}}`/`{{end}}`), runs [gofumpt](https://github.com/mvdan/gofumpt) on the result, verifies that gofumpt left every sentinel intact and in order, and restores the original actions in place — so the output is gofumpt-compliant where the underlying Go is gofumpt-compliant.
 
+Most codegen templates are fragments rather than whole files, so when gofumpt rejects a stub we retry it two ways before giving up: wrapped in a synthetic `package` clause, and with any declaration-level action (one alone on its line, such as `{{ reserveImport ... }}`) held as a comment. We try each form only after the previous one fails to parse, so a retry reaches more templates but never changes one that already formats. Whatever gofumpt still cannot parse takes the fallback.
+
 - We have no options.
 - We use tabs for indentation (gofumpt does).
 - We support `{{/* gotmplfumpt-ignore-all */}}`, `{{/* gotmplfumpt-ignore-start */}}` and `{{/* gotmplfumpt-ignore-end */}}` to skip regions.
-- Control tags (`{{if}}`, `{{range}}`, `{{with}}`, `{{else}}`, `{{end}}`) don't add indentation: they render to no Go braces, so their bodies stay at the surrounding Go level, and the template matches the shape of the Go it renders to.
+- Control tags (`{{if}}`, `{{range}}`, `{{with}}`, `{{else}}`, `{{end}}`) don't add indentation on either path: they render to no Go braces, so their bodies stay at the surrounding Go level, and the template matches the shape of the Go it renders to.
 - We format `define` block bodies: a body that is standalone Go is reformatted by gofumpt (wrapped in a synthetic package first if it lacks one); a body that contains template actions is indented by its own structure.
-- When gofumpt rejects the stubbed Go (for example, the template emits a fragment rather than a whole file, or splits a Go statement across actions), we fall back to a brace-depth indent pass driven by the same source model. Output is still idempotent in that case.
+- When gofumpt still rejects the stubbed Go (for example, the template splits a Go statement across actions), we fall back to an indent pass driven by the same source model: indentation follows the literal Go braces alone, with control tags invisible, so the fallback matches the primary path. Output is still idempotent in that case.
 - We don't auto-add trailing newlines.
 - We care about idempotency: if you find an input that formats differently on a second pass, file a bug report.
 
@@ -17,7 +19,8 @@ It parses the template with the [text/template/parse](https://pkg.go.dev/text/te
 
 - Actions that emit half a Go statement (`{{ if .X }}a, b := {{ end }} f()`) take the fallback path.
 - The tool preserves verbatim any action inside a Go string literal (gofumpt doesn't reformat string bodies).
-- Templates without a `package` clause render as fragments — the fallback path handles them.
+- Templates without a `package` clause are fragments. We wrap a declaration-list fragment in a synthetic `package` (holding any leading declaration-level actions as comments) so it still reaches gofumpt; only what gofumpt cannot parse either way takes the fallback.
+- On the fallback path, control-tag lines (`{{if}}`/`{{range}}`/`{{end}}`) are placed at the surrounding Go-brace depth. They emit nothing — and usually carry `{{-` trim markers that delete their leading whitespace at render time — so the render can't dictate where they go; a `{{range}}` wrapping switch cases can end up deeper than the `case` labels inside it. This is cosmetic: the emitted Go still matches the render. Higher fidelity comes from routing more templates onto the gofumpt path, not from growing the fallback (see `TODO.md`).
 
 ## Install
 

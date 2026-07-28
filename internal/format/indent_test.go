@@ -29,21 +29,45 @@ func TestTilingIndent(t *testing.T) {
 			in:   "func F() {\nreturn\n}\n",
 			want: "func F() {\n\treturn\n}\n",
 		},
-		"template branch indent": {
+		"line opening two brackets indents body one level": {
+			in:   "func main() {\nsrv.Use(Foo{\nCache: bar(100),\n})\n}\n",
+			want: "func main() {\n\tsrv.Use(Foo{\n\t\tCache: bar(100),\n\t})\n}\n",
+		},
+		"paren opened and closed on one line adds no depth": {
+			in:   "func F() {\ngo func() {\nwork()\n}()\n}\n",
+			want: "func F() {\n\tgo func() {\n\t\twork()\n\t}()\n}\n",
+		},
+		"control tag alone is invisible": {
 			in:   "{{ if .X }}\na\n{{ end }}\n",
-			want: "{{ if .X }}\n\ta\n{{ end }}\n",
+			want: "{{ if .X }}\na\n{{ end }}\n",
 		},
-		"else dedents to block level": {
+		"if/else/end all sit at block level": {
 			in:   "{{ if .X }}\na\n{{ else }}\nb\n{{ end }}\n",
-			want: "{{ if .X }}\n\ta\n{{ else }}\n\tb\n{{ end }}\n",
+			want: "{{ if .X }}\na\n{{ else }}\nb\n{{ end }}\n",
 		},
-		"branch inside func body adds depths": {
+		"branch body follows go-brace depth only": {
 			in:   "func F() {\n{{ if .X }}\nreturn 1\n{{ end }}\n}\n",
-			want: "func F() {\n\t{{ if .X }}\n\t\treturn 1\n\t{{ end }}\n}\n",
+			want: "func F() {\n\t{{ if .X }}\n\treturn 1\n\t{{ end }}\n}\n",
 		},
-		"nested ranges indent body by template depth": {
+		"nested ranges are invisible without go braces": {
 			in:   "{{ range .Events }}{{ range . }}\ntype {{ .Name }} struct{}\n{{ end }}{{ end }}\n",
-			want: "{{ range .Events }}{{ range . }}\n\t\ttype {{ .Name }} struct{}\n{{ end }}{{ end }}\n",
+			want: "{{ range .Events }}{{ range . }}\ntype {{ .Name }} struct{}\n{{ end }}{{ end }}\n",
+		},
+		"switch dedents case and default labels": {
+			in:   "switch e {\ncase 1:\nreturn true\ndefault:\nreturn false\n}\n",
+			want: "switch e {\ncase 1:\n\treturn true\ndefault:\n\treturn false\n}\n",
+		},
+		"case body with a nested block indents normally": {
+			in:   "switch e {\ncase 1:\nif x {\ndo()\n}\n}\n",
+			want: "switch e {\ncase 1:\n\tif x {\n\t\tdo()\n\t}\n}\n",
+		},
+		"select dedents case labels": {
+			in:   "select {\ncase <-ch:\nreturn\n}\n",
+			want: "select {\ncase <-ch:\n\treturn\n}\n",
+		},
+		"case-like identifier is not dedented": {
+			in:   "func F() {\ncaseCount := 1\n}\n",
+			want: "func F() {\n\tcaseCount := 1\n}\n",
 		},
 		"define body is verbatim": {
 			in:   "{{ define \"x\" }}\npackage main\n\nfunc F() {}\n{{ end }}\n",

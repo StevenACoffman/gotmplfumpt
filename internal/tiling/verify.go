@@ -23,7 +23,7 @@ func (t Tiling) VerifyFormatted(formatted string) error {
 		if s.Type == Literal {
 			continue
 		}
-		needle := sentinel(t.prefix, i, s.Type)
+		needle := t.sentinelFor(i)
 		if n := strings.Count(formatted, needle); n != 1 {
 			return fmt.Errorf("tiling: sentinel for slice %d (block %d) occurs %d times, want 1",
 				i, s.Block, n)

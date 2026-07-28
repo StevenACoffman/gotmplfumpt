@@ -93,9 +93,9 @@ func formatGoFragment(core string) (string, bool) {
 	if err != nil {
 		return core, false
 	}
-	s := strings.TrimPrefix(string(out), wrapPackage)
-	s = strings.TrimPrefix(s, "\n") // gofumpt's blank line after the package clause
-	s = strings.TrimSuffix(s, "\n") // gofumpt's file-final newline
+	// A define body is spliced between "}}" and "{{", so it drops gofumpt's
+	// file-final newline; the stub path keeps it.
+	s := strings.TrimSuffix(stripWrapPackage(string(out)), "\n")
 	return s, true
 }
 

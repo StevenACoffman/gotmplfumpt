@@ -24,7 +24,7 @@ func (t Tiling) Stub() string {
 			b.WriteString(t.Raw(s))
 			continue
 		}
-		b.WriteString(sentinel(t.prefix, i, s.Type))
+		b.WriteString(t.sentinelFor(i))
 	}
 	return b.String()
 }
@@ -50,7 +50,7 @@ func (t Tiling) Restore(formatted string) (string, error) {
 		if s.Type == Literal {
 			continue
 		}
-		needle := sentinel(t.prefix, i, s.Type)
+		needle := t.sentinelFor(i)
 		off := strings.Index(formatted[cur:], needle)
 		if off < 0 {
 			return "", fmt.Errorf(

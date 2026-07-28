@@ -19,8 +19,8 @@ func TestVerifyFormatted(t *testing.T) {
 		t.Fatalf("ScanTiling: %v", err)
 	}
 	stub := til.Stub()
-	open := sentinel(til.prefix, 0, BlockOpen)
-	closeS := sentinel(til.prefix, 2, BlockClose)
+	open := til.sentinelFor(0)
+	closeS := til.sentinelFor(2)
 
 	if err := til.VerifyFormatted(stub); err != nil {
 		t.Errorf("faithful stub reported: %v", err)
