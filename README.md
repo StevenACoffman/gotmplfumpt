@@ -89,6 +89,44 @@ const (
 
 gofumpt sees this as a fixed point and makes no changes.
 
+## Library
+
+Beyond the CLI, the `render` package offers two functions that use your template *data* to check the rendered Go — the data-driven counterpart to the data-less formatter. Both expect the template to render a complete Go file, since gofumpt rejects a bare fragment.
+
+### Diagnosing a Render
+
+`render.Diagnose` renders a template with your data, runs gofumpt on the output, and reports what gofumpt would change — pointing each change back at the template line where it can prove the mapping and flagging the rest:
+
+```go
+import "github.com/StevenACoffman/gotmplfumpt/render"
+
+rep, err := render.Diagnose(src, funcs, data)
+if err != nil {
+	// The template did not parse or execute, or rendered invalid Go.
+}
+for _, f := range rep.Findings {
+	if f.TemplateLine != 0 {
+		fmt.Printf("template line %d (%s): %s\n", f.TemplateLine, f.Enclosing, f.Note)
+	} else {
+		fmt.Printf("rendered line %d: %s\n", f.RenderedLine, f.Note)
+	}
+}
+```
+
+A change maps to a template line only when the rendered line, with whitespace collapsed, equals a template line — so a mapped line is always literal template text, never an action. Changes on templated output (for example column alignment, whose width depends on your data) are reported unmapped rather than guessed. A mapped line inside a `{{range}}` or `{{if}}` carries a note that the change repeats or is conditional. `Diagnose` never edits the template.
+
+### Verifying a Reformat
+
+`render.VerifyFormatPreservesRender` proves that formatting a template with gotmplfumpt does not change what it renders. It formats the template, renders both the original and the formatted template with your data, runs gofumpt on each, and returns an error unless the two are byte-identical:
+
+```go
+if err := render.VerifyFormatPreservesRender(src, funcs, data); err != nil {
+	// gotmplfumpt's reformatting changed the rendered output — a bug.
+}
+```
+
+The comparison happens after gofumpt on purpose: gotmplfumpt reflows template layout, so the raw renders differ in whitespace by design, while the generated Go stays identical once canonicalized. A difference that survives gofumpt is a real gotmplfumpt bug, and the error names the cause. `funcs` run twice, once per template, so they should be free of caller-visible side effects.
+
 ## Recommended Related Tools
 
 - [templatecheck](https://github.com/jba/templatecheck)
