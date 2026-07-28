@@ -226,10 +226,44 @@ two levers below target exactly those shapes.
       rendering.
 
 - [ ] **Backport static-analysis findings from rendered `.go` to template
-      source.** _(design)_ Requires a rendered↔source map — the SQLFluff
-      direction deliberately NOT built here (gotmplfumpt never renders). Revisit
-      only if this becomes a goal; see `scratchpad/` design notes for why the
-      render→backport approach is a poor fit for a data-less formatter.
+      source.** _(design)_ This needs a rendered↔source map, which
+      `text/template` does not provide: the executor emits bytes with no source
+      positions, and the projection is many-to-one (`{{range}}` bodies emit N
+      times), lossy (values become concrete bytes), branch-shadowed (data hides
+      `{{else}}` arms), and whitespace-shifted (`{{-`/`-}}`). Building a sound map
+      means forking the executor or an SQLFluff-style instrumented trace — large,
+      and still cannot place a change that lives inside a loop body.
+      One distinction decides whether this is worth it: backporting **gofumpt
+      formatting** is low value, because the data-less stub→restore pipeline
+      applies every data-independent formatting change without a map, and the one
+      class it misses — width-dependent column alignment — is not expressible as
+      static template text anyway (that is what the `padRight` helper is for). So
+      a render→backport of formatting would mostly re-derive what stubbing already
+      does, plus the cases that cannot be backported. Backporting
+      **static-analysis / bug findings** (a missing nil check) is the version with
+      real payoff: those are data-independent and worth surfacing. Same hard map,
+      very different value — pursue it for findings, not for formatting.
+
+- [x] **Render diagnostic (`render.Diagnose`).** _(done)_ A best-effort reporter,
+      not a rewriter: render a template with caller-supplied data, run gofumpt on
+      the result, and report what gofumpt would change — each hunk mapped back to
+      a template line where a whitespace-collapsed literal line matches uniquely,
+      and flagged unmappable (likely on templated / data-dependent output)
+      otherwise, with the enclosing `{{range}}`/`{{if}}` noted so the caller knows
+      a mapped change may repeat or be conditional. It sidesteps the source-map
+      problem by claiming only mappings it can prove (a literal line present
+      verbatim in the source) and flagging the rest. Public package `render`;
+      never edits the template; expects a template that renders a complete Go
+      file (a fragment render is reported as "not valid Go"). See `render/`.
+
+- [ ] **Render-equivalence check (`render.VerifyFormatPreservesRender`).**
+      _(planned)_ `func VerifyFormatPreservesRender(src string, funcs
+      template.FuncMap, data any) error`. Format the template with the data-less
+      pipeline, then render both the original and the formatted template with the
+      caller's data, gofumpt both, and return an error unless the two render to
+      byte-identical Go. Uses data for what data is good at — verifying that a
+      reformat is render-preserving — rather than the intractable backport, so it
+      needs no source map. Would live beside `render.Diagnose`.
 
 ## Done (This Effort)
 
