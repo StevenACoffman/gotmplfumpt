@@ -6,6 +6,9 @@
 # Tool and product names
 (?i)gotmplfumpt
 (?i)gofumpt
+(?i)gofumpts
+(?i)gofmt
+(?i)gqlgen
 (?i)gowheels
 SQLFluff
 (?i)pypi
@@ -17,6 +20,22 @@ SQLFluff
 (?i)reindentation
 (?i)reparse
 (?i)reflowed
+(?i)reflows
+(?i)reflowing
 (?i)desynced
 (?i)goldens
 (?i)eventgen
+(?i)indenter
+(?i)dedent
+(?i)dedents
+(?i)dedenting
+(?i)unmappable
+(?i)rewriter
+(?i)lossy
+(?i)reserveImport
+(?i)reserveImports
+(?i)directives_
+
+# Go keywords quoted in prose (parser error text, "func-name")
+(?i)func
+(?i)goto
