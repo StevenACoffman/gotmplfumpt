@@ -6,7 +6,7 @@ model; items marked _(design)_ come from the SQLFluff source-map comparison;
 items marked _(gqlgen)_ surfaced by running gotmplfumpt over the gqlgen codegen
 templates (`github.com/99designs/gqlgen`).
 
-## Fallback Indenter — Make It gofmt-Faithful and Indentation-Invisible
+## Fallback Indenter — Make It Gofmt-Faithful and Indentation-Invisible
 
 The fallback path (`internal/format/indent.go`, `tilingIndent`) diverges from
 both gofmt and the tool's own "control tags are indentation-invisible" design
@@ -102,7 +102,7 @@ Instead, do more of the work _around_ gofumpt and hand it better stubs.
       render. The comment-sentinel design is correct and intentional, not a
       limitation. See the design principle below.
 
-### Which templates fall back, and why _(gqlgen, measured)_
+### Which Templates Fall Back, and Why _(Gqlgen, Measured)_
 
 A probe over all 20 gqlgen `.gotpl` templates found that **every one** falls
 back for a single reason: gofumpt's `format.Source` requires a `package` clause
