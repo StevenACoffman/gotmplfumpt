@@ -18,6 +18,7 @@ It parses the template with the [text/template/parse](https://pkg.go.dev/text/te
 - Actions that emit half a Go statement (`{{ if .X }}a, b := {{ end }} f()`) take the fallback path.
 - The tool preserves verbatim any action inside a Go string literal (gofumpt doesn't reformat string bodies).
 - Templates without a `package` clause render as fragments — the fallback path handles them.
+- On the fallback path, control-tag lines (`{{if}}`/`{{range}}`/`{{end}}`) are placed at the surrounding Go-brace depth. They emit nothing — and usually carry `{{-` trim markers that delete their leading whitespace at render time — so the render can't dictate where they go; a `{{range}}` wrapping switch cases can end up deeper than the `case` labels inside it. This is cosmetic: the emitted Go still matches the render. Higher fidelity comes from routing more templates onto the gofumpt path, not from growing the fallback (see `TODO.md`).
 
 ## Install
 

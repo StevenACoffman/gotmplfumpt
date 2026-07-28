@@ -66,7 +66,7 @@ func TestFormatGoFragment(t *testing.T) {
 
 // TestReformatDefineBlock checks that a Go body is reflowed while surrounding
 // whitespace and the delimiters are preserved, and that a template-fragment
-// body is left untouched.
+// body is re-indented by its Go braces alone (control tags invisible).
 func TestReformatDefineBlock(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -85,9 +85,14 @@ func TestReformatDefineBlock(t *testing.T) {
 			want: "{{define \"x\"}}{{ .Y }}{{end}}",
 		},
 		{
-			name: "multi-line template-fragment body structurally indented",
+			name: "multi-line template-fragment body, control tags invisible",
 			raw:  "{{define \"x\"}}\n{{ if .Y }}\na\n{{ end }}\n{{end}}",
-			want: "{{define \"x\"}}\n{{ if .Y }}\n\ta\n{{ end }}\n{{end}}",
+			want: "{{define \"x\"}}\n{{ if .Y }}\na\n{{ end }}\n{{end}}",
+		},
+		{
+			name: "template-fragment body indents by go braces only",
+			raw:  "{{define \"x\"}}\n{{ if .Y }}\nif x {\ndo()\n}\n{{ end }}\n{{end}}",
+			want: "{{define \"x\"}}\n{{ if .Y }}\nif x {\n\tdo()\n}\n{{ end }}\n{{end}}",
 		},
 	}
 	for _, tt := range tests {
