@@ -237,12 +237,12 @@ two levers below target exactly those shapes.
       formatting** is low value, because the data-less stub→restore pipeline
       applies every data-independent formatting change without a map, and the one
       class it misses — width-dependent column alignment — is not expressible as
-      static template text anyway (that is what the `padRight` helper is for). So
-      a render→backport of formatting would mostly re-derive what stubbing already
-      does, plus the cases that cannot be backported. Backporting
+      static template text anyway (that is what the `padRight` helper is for). A
+      render→backport of formatting would therefore mostly re-derive what stubbing
+      already does, plus the cases that cannot be backported. Backporting
       **static-analysis / bug findings** (a missing nil check) is the version with
       real payoff: those are data-independent and worth surfacing. Same hard map,
-      very different value — pursue it for findings, not for formatting.
+      wholly different value — pursue it for findings, not for formatting.
 
 - [x] **Render diagnostic (`render.Diagnose`).** _(done)_ A best-effort reporter,
       not a rewriter: render a template with caller-supplied data, run gofumpt on
