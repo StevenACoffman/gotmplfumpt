@@ -26,6 +26,13 @@ func formatGo(src []byte) ([]byte, error) {
 	return out, nil
 }
 
+// GoSource runs gofumpt on src with the same options the formatter uses. It is
+// exported so sibling packages (for example render) can reproduce exactly the
+// formatting whose effect they diagnose.
+func GoSource(src []byte) ([]byte, error) {
+	return formatGo(src)
+}
+
 // formatStub runs gofumpt on a tiling stub. A stub that is already a whole file
 // (has a package clause) formats directly; a package-less fragment — the common
 // case for code-generation templates — is retried wrapped in a synthetic
