@@ -58,6 +58,11 @@ type RawSlice struct {
 	Block int
 	Start int
 	Stop  int
+	// Standalone is set on an Action that is the only non-whitespace on its
+	// source line. Such an action sits at a statement/declaration boundary, so
+	// it can be stubbed as a comment (valid where an identifier is not) when the
+	// identifier stub does not parse. Meaningless for non-Action slices.
+	Standalone bool
 }
 
 // Tiling is a gap-free, non-overlapping partition of Src into typed slices,
@@ -71,6 +76,20 @@ type Tiling struct {
 	// agree without the caller threading it through both. ScanTiling sets it;
 	// a hand-built Tiling that never calls Stub/Restore may leave it empty.
 	prefix string
+	// commentStandalone makes sentinelFor emit the comment form for standalone
+	// actions as well as control tags. Off by default; WithStandaloneComments
+	// turns it on for a second formatting attempt.
+	commentStandalone bool
+}
+
+// WithStandaloneComments returns a copy of t whose Stub/Restore/VerifyFormatted
+// hold standalone actions as comments (see sentinelFor). It is used as a second
+// formatting attempt: a template that leads with declaration-level actions
+// (`{{reserveImport}}`) has an identifier stub that does not parse, but a
+// comment stub does. The receiver is unchanged (Slices is shared, never mutated).
+func (t Tiling) WithStandaloneComments() Tiling {
+	t.commentStandalone = true
+	return t
 }
 
 // String returns the SQLFluff-style name of the slice type.

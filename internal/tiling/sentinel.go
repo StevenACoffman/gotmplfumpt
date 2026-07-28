@@ -37,12 +37,29 @@ func uniquePrefix(src string) string {
 	return fmt.Sprintf("%s_x%08x_z", sentinelBase, h.Sum32())
 }
 
-// sentinel returns the placeholder for the non-literal slice at tiling index
-// id. Action slices become an identifier; all other non-literal slices become
-// a block comment.
-func sentinel(prefix string, id int, typ SliceType) string {
-	if typ == Action {
-		return fmt.Sprintf("%s_a%d_", prefix, id)
+// sentinelFor returns the placeholder for the non-literal slice at tiling index
+// i. An output-producing Action becomes an identifier so it is a valid Go
+// expression; every other non-literal slice becomes a block comment, valid in
+// any position. The one exception: when commentStandalone is set, a standalone
+// Action (alone on its source line, so at a statement/declaration boundary) also
+// takes the comment form — an identifier is invalid at declaration position,
+// but a comment is not. Stub, Restore, and VerifyFormatted all route through
+// here, so the three agree on the form for every slice.
+func (t Tiling) sentinelFor(i int) string {
+	s := t.Slices[i]
+	if s.Type == Action && (!t.commentStandalone || !s.Standalone) {
+		return actionSentinel(t.prefix, i)
 	}
+	return commentSentinel(t.prefix, i)
+}
+
+// actionSentinel is the identifier placeholder for an output-producing action.
+func actionSentinel(prefix string, id int) string {
+	return fmt.Sprintf("%s_a%d_", prefix, id)
+}
+
+// commentSentinel is the block-comment placeholder for a control tag, template
+// comment, define, or a standalone action held at declaration position.
+func commentSentinel(prefix string, id int) string {
 	return fmt.Sprintf("/*%s_b%d*/", prefix, id)
 }

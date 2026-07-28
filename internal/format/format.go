@@ -57,20 +57,33 @@ func Format(text string) (string, error) {
 }
 
 // formatViaGofumpt is the primary path: stub → gofumpt → verify → restore.
-// Returns (formatted, true) on success; (_, false) when any step fails so the
-// caller can fall back.
+// It first tries the default stub, then retries with standalone actions held as
+// comments so a template that leads with declaration-level actions
+// ({{reserveImport}}) reaches the gofumpt path. The retry runs only after the
+// identifier stub fails, so it can only add successes, never change a template
+// that already formats. Returns (formatted, true) on success; (_, false) when
+// both attempts fail so the caller can fall back.
 func formatViaGofumpt(til tiling.Tiling) (string, bool) {
-	formatted, err := formatGo([]byte(til.Stub()))
-	if err != nil {
+	if out, ok := tryFormat(til); ok {
+		return out, true
+	}
+	return tryFormat(til.WithStandaloneComments())
+}
+
+// tryFormat runs one stub → gofumpt → verify → restore attempt for the given
+// tiling configuration. ok is false when gofumpt rejects the stub or a sentinel
+// did not survive intact and in order — a mismatch would corrupt the template on
+// restore — so the caller can try another configuration or fall back. The verify
+// is a cheaper check than reparsing.
+func tryFormat(til tiling.Tiling) (string, bool) {
+	formatted, ok := formatStub(til.Stub())
+	if !ok {
 		return "", false
 	}
-	// Assert gofumpt left every sentinel intact and in order (so no sentinel
-	// crossed a block boundary); a mismatch means restoration would corrupt
-	// the template, so fall back. This is a cheaper check than reparsing.
-	if err := til.VerifyFormatted(string(formatted)); err != nil {
+	if err := til.VerifyFormatted(formatted); err != nil {
 		return "", false
 	}
-	out, err := til.Restore(string(formatted))
+	out, err := til.Restore(formatted)
 	if err != nil {
 		return "", false
 	}
